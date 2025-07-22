@@ -124,15 +124,24 @@ def _worker(
         if tiktoken
         else AutoTokenizer.from_pretrained(tokenizer_path)
     )
+    
+    def encode_fn(texts: list[str | list[dict]]) -> list[list[int]]:
+        if isinstance(texts[0], str):
+            if tiktoken:
+                input_ids = tokenizer.encoding.encode_ordinary_batch(texts, num_threads=16)
+            else:
+                input_ids = tokenizer(texts)["input_ids"]
+            eos_id = tokenizer.eos_id if tiktoken else tokenizer.eos_token_id
+            return [ids + [eos_id] for ids in input_ids]
+        else:
+            if not tiktoken:
+                input_ids = tokenizer.apply_chat_template(texts, tokenize=True)
+                eos_id = tokenizer.eos_id if tiktoken else tokenizer.eos_token_id
+                input_ids = [ids + [eos_id] for ids in input_ids]
+                return input_ids
+            else:
+                raise ValueError("Chat template encoding with tiktoken is not supported")
 
-    def encode_fn(texts: list[str]) -> list[list[int]]:
-        input_ids = (
-            tokenizer.encoding.encode_ordinary_batch(texts, num_threads=16)
-            if tiktoken
-            else tokenizer(texts)["input_ids"]
-        )
-        eos_id = tokenizer.eos_id if tiktoken else tokenizer.eos_token_id
-        return [ids + [eos_id] for ids in input_ids]
 
     worker_id = output_dir.rstrip("/").split("/")[-1]
     print(f"({worker_id}): Worker started.", flush=True)
