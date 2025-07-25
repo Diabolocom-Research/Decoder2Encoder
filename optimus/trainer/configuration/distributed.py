@@ -9,8 +9,8 @@ from torch.distributed.fsdp.wrap import (
     transformer_auto_wrap_policy,
 )
 
+from transformers.models.qwen3.modeling_qwen3 import Qwen3DecoderLayer    
 from optimus.trainer.model.model import Block
-
 
 @dataclass
 class DistributedConfig:
@@ -71,14 +71,18 @@ class DistributedConfig:
     def mixed_precision(self, mixed_precision: Union[MixedPrecision, str]):
         self._mixed_precision = mixed_precision
 
-    _wrap_policy: str = "transformer_auto_wrap_policy"  # Wrap policy for fsdp if the sharding strategy shard parameters
+    _wrap_policy: str = "transformer_auto_wrap_policy"
 
     @property
     def wrap_policy(self) -> Union[Callable, wrap.ModuleWrapPolicy, wrap.CustomPolicy]:
         if self._wrap_policy == "size_based_auto_wrap_policy":
-            return functools.partial(size_based_auto_wrap_policy, min_num_params=20000)
+            return functools.partial(
+                size_based_auto_wrap_policy,
+                min_num_params=20000,
+                exclude_wrap_modules={}
+                )
         elif self._wrap_policy == "transformer_auto_wrap_policy":
             return functools.partial(
                 transformer_auto_wrap_policy,
-                transformer_layer_cls={Block},
+                transformer_layer_cls={Block, Qwen3DecoderLayer},
             )
