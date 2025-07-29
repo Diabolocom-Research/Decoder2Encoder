@@ -14,7 +14,10 @@ def get_text(file_path: str, batch_size: int = 2000) -> Iterable[list[dict[str, 
         reader = pa.ipc.RecordBatchStreamReader(f)
         for record_batch in reader:
             for line in record_batch.to_pylist():
-                text = line["input"] + " " + line["output"]
+                text = [
+                    {"from": "human", "value": line["input"]},
+                    {"from": "gpt", "value": line["output"]}
+                ]
                 batch.append({"text": text})
                 if len(batch) == batch_size:
                     yield batch

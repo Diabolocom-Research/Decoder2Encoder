@@ -13,8 +13,7 @@ def get_text(file_path: str, batch_size: int = 2000) -> Iterable[list[dict[str, 
     with open(file_path, mode="r", encoding="utf-8") as file:
         for line in file:
             obj = json.loads(line)
-            text = " ".join(conv["content"] for conv in obj["conversations"])
-            batch.append({"text": text})
+            batch.append({"text": obj["conversations"]})
             if len(batch) == batch_size:
                 yield batch
                 batch = []
