@@ -137,10 +137,13 @@ class Pretrain:
                 with no_sync:
                     with autocast:
                         if self.config.model.huggingface_id:
-                            print(batch)
                             batch = {
-                                key: value
-                                for key, value in batch.items()
+                                "input_ids": batch["x"], 
+                                "labels": batch["labels"],
+                                "cumulative_seqlens_q": batch.get("cu_seq_lens"),
+                                "cumulative_seqlens_k": batch.get("cu_seq_lens"),
+                                "max_length_q": batch.get("max_seqlen"),
+                                "max_length_k": batch.get("max_seqlen"),
                             }
                             loss, _ = self.model(**batch)
                         else:

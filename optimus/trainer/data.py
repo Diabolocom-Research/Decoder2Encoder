@@ -143,7 +143,7 @@ class Data:
         inputs = torch.tensor(batch[:, 0], dtype=torch.long)
         labels = torch.tensor(batch[:, 1], dtype=torch.long)
         return {
-            "input_ids" if self.hf_model else "x": inputs,
+            "x": inputs,
             "labels": labels,
         }
 
@@ -176,7 +176,7 @@ class Data:
         )
 
         return {
-            "input_ids" if self.hf_model else "x": inputs,
+            "x": inputs,
             "labels": labels,
             "cu_seq_lens": cu_seq_lens,
             "max_seqlen": lengths.max().item(),

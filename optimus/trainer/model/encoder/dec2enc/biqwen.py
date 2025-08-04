@@ -18,7 +18,7 @@ from transformers.modeling_outputs import (
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from transformers.processing_utils import Unpack
-from transformers.utils import auto_docstring, can_return_tuple, logging
+from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple, logging
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 from transformers.modeling_attn_mask_utils import AttentionMaskConverter
 
@@ -506,6 +506,7 @@ class Qwen3ForMaskedLM(Qwen3PreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> Union[Tuple[torch.Tensor], MaskedLMOutput]:
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
@@ -517,6 +518,7 @@ class Qwen3ForMaskedLM(Qwen3PreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            **kwargs,
         )
 
         prediction_scores = self.lm_head(encoder_output[0])
