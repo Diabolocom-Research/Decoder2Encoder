@@ -505,10 +505,8 @@ class Qwen3ForMaskedLM(Qwen3PreTrainedModel):
         labels: Optional[torch.LongTensor] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> Union[Tuple[torch.Tensor], MaskedLMOutput]:
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         encoder_output = self.model(
             input_ids,
@@ -517,7 +515,6 @@ class Qwen3ForMaskedLM(Qwen3PreTrainedModel):
             inputs_embeds=inputs_embeds,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
             **kwargs,
         )
 
@@ -527,10 +524,6 @@ class Qwen3ForMaskedLM(Qwen3PreTrainedModel):
             labels = labels.to(prediction_scores.device)
             masked_lm_loss = self.loss_function(prediction_scores, labels, vocab_size=self.config.vocab_size)
 
-        if not return_dict:
-            output = (prediction_scores,) + encoder_output[1:]
-            return ((masked_lm_loss,) + output) if masked_lm_loss is not None else output
-        print(return_dict)
         return MaskedLMOutput(
             loss=masked_lm_loss,
             logits=prediction_scores,
