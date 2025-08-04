@@ -530,7 +530,7 @@ class Qwen3ForMaskedLM(Qwen3PreTrainedModel):
         if not return_dict:
             output = (prediction_scores,) + encoder_output[1:]
             return ((masked_lm_loss,) + output) if masked_lm_loss is not None else output
-
+        print(return_dict)
         return MaskedLMOutput(
             loss=masked_lm_loss,
             logits=prediction_scores,

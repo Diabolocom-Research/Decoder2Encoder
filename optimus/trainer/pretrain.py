@@ -138,7 +138,7 @@ class Pretrain:
                     with autocast:
                         if self.config.model.huggingface_id:
                             output = self.model(**batch, return_dict=True)
-                            print(output)
+                            print(output[0])
                             exit(0)
                         else:
                             _, loss = self.model(**batch, cache=self.cache)
