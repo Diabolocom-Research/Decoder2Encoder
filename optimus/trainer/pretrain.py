@@ -137,7 +137,7 @@ class Pretrain:
                 with no_sync:
                     with autocast:
                         if self.config.model.huggingface_id:
-                            loss, _ = self.model(**batch, return_dict=False)
+                            loss = self.model(**batch).loss
                         else:
                             _, loss = self.model(**batch, cache=self.cache)
                         loss = loss / self.config.train.gradient_accumulation_steps
