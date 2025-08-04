@@ -6,6 +6,7 @@ import numpy as np
 import torch
 from numpy.typing import NDArray
 from streaming import Stream, StreamingDataLoader, StreamingDataset
+from torch.nn.utils.rnn import pad_sequence
 
 from optimus.trainer.configuration.configs import Config
 
@@ -121,9 +122,11 @@ class Data:
             batch_size=self.data_config.batch_size,
             num_workers=self.data_config.num_workers,
             prefetch_factor=self.data_config.prefetch_factor or None,
-            collate_fn=self.to_torch_collate_var_len_fn
-            if self.data_config.var_len
-            else self.to_torch_collate_fn,
+            collate_fn = (
+                self.to_torch_collate_HF_pad_fn if self.hf_model else
+                self.to_torch_collate_var_len_fn if self.data_config.var_len else
+                self.to_torch_collate_fn
+            ),
             pin_memory=self.data_config.pin_memory,
             drop_last=True,
         )
@@ -155,7 +158,6 @@ class Data:
         Returns:
             dict[str, torch.Tensor]: A dictionary containing input_ids, labels, and cu_seq_lens.
         """
-        # Unpack the sequences and labels
         input_seqs, label_seqs = zip(*batch)
 
         # Compute cumulative sequence lengths
@@ -180,6 +182,31 @@ class Data:
             "labels": labels,
             "cu_seq_lens": cu_seq_lens,
             "max_seqlen": lengths.max().item(),
+        }
+
+    def to_torch_collate_HF_pad_fn(self, batch):
+        """
+        Collate function for the dataloader (used by HuggingFace). Prepares the batch with padding and attention masks.
+        
+        Args:
+            batch: List of tuples (input_seq, label_seq), where each seq is a list of token IDs.
+
+        Returns:
+            dict[str, torch.Tensor]: Dictionary with input_ids, labels, attention_mask.
+        """
+        input_seqs, label_seqs = zip(*batch)
+
+        input_tensors = [torch.tensor(seq, dtype=torch.long) for seq in input_seqs]
+        label_tensors = [torch.tensor(seq, dtype=torch.long) for seq in label_seqs]
+
+        padded_inputs = pad_sequence(input_tensors, batch_first=True, padding_value=0)
+        padded_labels = pad_sequence(label_tensors, batch_first=True, padding_value=-100)
+        attention_mask = (padded_inputs != 0).long()
+
+        return {
+            "input_ids": padded_inputs,
+            "attention_mask": attention_mask,
+            "labels": padded_labels,
         }
 
     # ----------------------
