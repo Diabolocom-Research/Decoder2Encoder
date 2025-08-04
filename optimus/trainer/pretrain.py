@@ -137,8 +137,9 @@ class Pretrain:
                 with no_sync:
                     with autocast:
                         if self.config.model.huggingface_id:
+                            print(batch)
                             batch = {
-                                key: value.to(device=self.model.device)
+                                key: value
                                 for key, value in batch.items()
                             }
                             loss, _ = self.model(**batch)
