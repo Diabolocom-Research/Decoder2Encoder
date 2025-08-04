@@ -71,7 +71,7 @@ def load_model(config: Config):
     """
     if config.model.huggingface_id:
         logging.set_verbosity_error()
-        if config.model.huggingface_id.startswith("Qwen/Qwen3"):
+        if "Qwen3" in config.model.huggingface_id:
             from optimus.trainer.model.encoder.dec2enc.biqwen import Qwen3ForMaskedLM
             model = Qwen3ForMaskedLM.from_pretrained(
                 config.model.huggingface_id, return_dict=False, trust_remote_code=True
