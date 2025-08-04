@@ -18,7 +18,7 @@ from transformers.modeling_outputs import (
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from transformers.processing_utils import Unpack
-from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple, logging
+from transformers.utils import auto_docstring, can_return_tuple, logging
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 from transformers.modeling_attn_mask_utils import AttentionMaskConverter
 
@@ -505,8 +505,9 @@ class Qwen3ForMaskedLM(Qwen3PreTrainedModel):
         labels: Optional[torch.LongTensor] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
-        **kwargs: Unpack[TransformersKwargs],
+        return_dict: Optional[bool] = None,
     ) -> Union[Tuple[torch.Tensor], MaskedLMOutput]:
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         encoder_output = self.model(
             input_ids,
@@ -515,7 +516,7 @@ class Qwen3ForMaskedLM(Qwen3PreTrainedModel):
             inputs_embeds=inputs_embeds,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
-            **kwargs,
+            return_dict=return_dict,
         )
 
         prediction_scores = self.lm_head(encoder_output[0])
@@ -523,6 +524,10 @@ class Qwen3ForMaskedLM(Qwen3PreTrainedModel):
         if labels is not None:
             labels = labels.to(prediction_scores.device)
             masked_lm_loss = self.loss_function(prediction_scores, labels, vocab_size=self.config.vocab_size)
+
+        if not return_dict:
+            output = (prediction_scores,) + encoder_output[1:]
+            return ((masked_lm_loss,) + output) if masked_lm_loss is not None else output
 
         return MaskedLMOutput(
             loss=masked_lm_loss,
