@@ -8,7 +8,7 @@ from torch.distributed.fsdp.wrap import (
     size_based_auto_wrap_policy,
     transformer_auto_wrap_policy,
 )
-from optimus.trainer.model.encoder.dec2enc import Qwen3DecoderLayer
+from optimus.trainer.model.encoder.dec2enc.biqwen import Qwen3DecoderLayer
 from optimus.trainer.model.model import Block
 
 @dataclass

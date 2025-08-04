@@ -74,12 +74,16 @@ def load_model(config: Config):
         if "Qwen3" in config.model.huggingface_id:
             from optimus.trainer.model.encoder.dec2enc.biqwen import Qwen3ForMaskedLM
             model = Qwen3ForMaskedLM.from_pretrained(
-                config.model.huggingface_id, return_dict=False, trust_remote_code=True
+                config.model.huggingface_id, return_dict=False, trust_remote_code=True,
             )
         else:
             model = AutoModelForMaskedLM.from_pretrained(
                 config.model.huggingface_id, return_dict=False, trust_remote_code=True
             )
+        if config.model.attn_impl == "flash":
+            model.config.attn_implementation = "flash_attention_2"
+        elif config.data.var_len:
+            model.config.attn_implementation = "sdpa"
     else:
         if config.model.model_name == "bert":
             dict_config_model = update_config(
