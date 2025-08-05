@@ -15,12 +15,6 @@ from optimus.trainer.model.encoder.eurobert import EuroBERT, eurobert_config
 from optimus.trainer.model.encoder.dec2enc.biqwen import Qwen3ForMaskedLM
 from optimus.trainer.model.tools import ModelTools
 
-try:
-    from liger_kernel.transformers import apply_liger_kernel_to_qwen3
-    LIGER_KERNEL_AVAILABLE = True
-except ImportError:
-    LIGER_KERNEL_AVAILABLE = False
-
 
 def update_config(config: dataclass, config_dict: dict) -> dict:
     """
@@ -79,16 +73,9 @@ def load_model(config: Config):
     if config.model.huggingface_id:
         logging.set_verbosity_error()
         if "Qwen3" in config.model.huggingface_id:
-            if LIGER_KERNEL_AVAILABLE:
-                apply_liger_kernel_to_qwen3(
-                    rope=config.model.fused_rope,
-                    swiglu=config.model.fused_swiglu,
-                    cross_entropy=config.model.fused_cross_entropy,
-                    fused_linear_cross_entropy=config.model.fused_linear_cross_entropy,
-                    rms_norm=config.model.fused_rms_norm,
-                )
             model = Qwen3ForMaskedLM.from_pretrained(
-                config.model.huggingface_id, return_dict=False, trust_remote_code=True,
+                config.model.huggingface_id,
+                fused_cross_entropy=config.model.fused_cross_entropy,
             )
         else:
             model = AutoModelForMaskedLM.from_pretrained(
