@@ -120,16 +120,10 @@ def load_model(config: Config):
 
 
 def compile_model(model: torch.nn.Module, config: Config):
-    # WARNING: Torch flash attention raises an error with torch.compile, so we disable it.
-    # The other option is to run flash attention in eager mode (forcing a graph
-    # break), but it is slower. Therefore, we run with the math kernel which can be
-    # compiled and does not force a graph break.
-    torch.backends.cuda.enable_flash_sdp(False)
     return torch.compile(
         model,
         backend="inductor",
-        # Flash attention is not compilable, so we disable it.
-        # fullgraph=True,
+        dynamic=config.train.compile_dynamic,
         mode=config.train.compile_mode,
         options=config.train.compile_options,
     )

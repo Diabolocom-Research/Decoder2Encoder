@@ -32,6 +32,7 @@ class TrainConfig:
     compile_model: bool = False  # Compile model
     compile_mode: str | None = None  # Compilation mode
     compile_options: dict | None = None  # Compilation options
+    compile_dynamic: bool | None = None  # Dynamic compilation
 
     # Validation configurations
     run_validation: bool = True
