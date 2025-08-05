@@ -121,6 +121,7 @@ class Distributed:
                     "optimizer": optimizer_sd,
                 }
                 dcp.save(sd, checkpoint_id=step_dir)
+                del sd
 
         else:
             with FullyShardedDataParallel.state_dict_type(
@@ -136,7 +137,7 @@ class Distributed:
             }
             dcp.save(sd, checkpoint_id=step_dir)
 
-        del model_sd, optimizer_sd, sd
+        del model_sd, optimizer_sd
 
     def load_fsdp_model_optimizer(
         self,
