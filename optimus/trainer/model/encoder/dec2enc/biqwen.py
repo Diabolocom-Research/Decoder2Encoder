@@ -326,18 +326,6 @@ class Qwen3RotaryEmbedding(nn.Module):
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
 
-class CustomEmbedding(torch.nn.Module):
-    """This custom embedding class replaces the torch.nn.Embedding class, which has
-    compilation issues."""
-
-    def __init__(self, vocab_size, embed_dim):
-        super().__init__()
-        self.weight = torch.nn.Parameter(torch.empty(vocab_size, embed_dim))
-
-    def forward(self, input_ids):
-        return self.weight[input_ids, :]
-
-
 @auto_docstring
 class Qwen3Model(Qwen3PreTrainedModel):
     def __init__(self, config: Qwen3Config):
@@ -345,8 +333,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
-        # self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
-        self.embed_tokens = CustomEmbedding(config.vocab_size, config.hidden_size)
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(
             [Qwen3DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
