@@ -260,7 +260,7 @@ class Pretrain:
                     self.train_config.save_optimizer
                 ), "FSDP requires saving the optimizer with the model."
                 self.distributed.save_fsdp_model_optimizer(
-                    self.model, self.optimizer, path, self.config.distributed.save_full_state_dict
+                    self.model, self.optimizer, path
                 )
             elif self.main_process:
                 if self.train_config.ddp:
