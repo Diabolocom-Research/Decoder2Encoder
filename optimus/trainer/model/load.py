@@ -89,7 +89,7 @@ def load_model(config: Config):
         elif "Qwen3" in config.model.model_name:
             logging.set_verbosity_error()
             model = Qwen3ForMaskedLM.from_pretrained(
-                config.model.huggingface_id,
+                config.model.model_name,
                 attn_implementation="flash_attention_2" if config.model.attn_impl == "flash" else None,
                 fused_cross_entropy=config.model.fused_cross_entropy,
             )
