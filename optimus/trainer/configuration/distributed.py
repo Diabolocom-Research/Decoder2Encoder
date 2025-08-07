@@ -14,7 +14,6 @@ from optimus.trainer.model.model import Block
 @dataclass
 class DistributedConfig:
     _sharding_strategy: Union[ShardingStrategy, str] = "HYBRID_SHARD"
-    save_full_state_dict: bool = False
 
     @property
     def sharding_strategy(self) -> ShardingStrategy:

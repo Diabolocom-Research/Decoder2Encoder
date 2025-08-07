@@ -103,41 +103,13 @@ class Distributed:
         model: FullyShardedDataParallel,
         optimizer: torch.optim.Optimizer,
         step_dir: str,
-        save_full_state_dict: bool = False,
     ):
-        if save_full_state_dict:
-            with FullyShardedDataParallel.state_dict_type(
-                model,
-                StateDictType.FULL_STATE_DICT,
-                state_dict_config=FullStateDictConfig(
-                    offload_to_cpu=True, rank0_only=True
-                ),
-            ):
-                model_sd, optimizer_sd = dcp_sd.get_state_dict(model, optimizer)
-
-            if torch.distributed.get_rank() == 0:
-                sd = {
-                    "model": model_sd,
-                    "optimizer": optimizer_sd,
-                }
-                dcp.save(sd, checkpoint_id=step_dir)
-                del sd
-
-        else:
-            with FullyShardedDataParallel.state_dict_type(
-                model,
-                StateDictType.LOCAL_STATE_DICT,
-                state_dict_config=LocalStateDictConfig(),
-            ):
-                model_sd, optimizer_sd = dcp_sd.get_state_dict(model, optimizer)
-
-            sd = {
-                "model": model_sd,
-                "optimizer": optimizer_sd,
-            }
-            dcp.save(sd, checkpoint_id=step_dir)
-
-        del model_sd, optimizer_sd
+        model_sd, optimizer_sd = dcp_sd.get_state_dict(model, optimizer)
+        sd = {
+            "model": model_sd,
+            "optimizer": optimizer_sd,
+        }
+        dcp.save(sd, checkpoint_id=step_dir)
 
     def load_fsdp_model_optimizer(
         self,
