@@ -372,7 +372,7 @@ class Qwen3ForMaskedLM(Qwen3PreTrainedModel):
 
     def forward(
         self,
-        input_ids: torch.LongTensor,
+        x: torch.LongTensor,
         *,
         cu_seq_lens: Optional[torch.Tensor] = None,
         max_seqlen: Optional[int] = None,
@@ -380,7 +380,7 @@ class Qwen3ForMaskedLM(Qwen3PreTrainedModel):
         **kwargs
     ) -> tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
         hidden_states = self.model(
-            input_ids=input_ids,
+            input_ids=x,
             cu_seq_lens=cu_seq_lens,
             max_seqlen=max_seqlen,
         )
