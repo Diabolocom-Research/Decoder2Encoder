@@ -12,7 +12,7 @@ from transformers import (
 from optimus.trainer.configuration.configs import Config
 from optimus.trainer.model.encoder.bert import Bert, bert_config
 from optimus.trainer.model.encoder.eurobert import EuroBERT, eurobert_config
-from optimus.trainer.model.encoder.dec2enc.biqwen import Qwen3ForMaskedLM
+from optimus.trainer.model.encoder.biqwen import Qwen3ForMaskedLM
 from optimus.trainer.model.tools import ModelTools
 
 
@@ -71,20 +71,10 @@ def load_model(config: Config):
     Returns: Model object.
     """
     if config.model.huggingface_id:
-        logging.set_verbosity_error()
-        if "Qwen3" in config.model.huggingface_id:
-            model = Qwen3ForMaskedLM.from_pretrained(
-                config.model.huggingface_id,
-                fused_cross_entropy=config.model.fused_cross_entropy,
-            )
-        else:
-            model = AutoModelForMaskedLM.from_pretrained(
-                config.model.huggingface_id, return_dict=False, trust_remote_code=True
-            )
-        if config.model.attn_impl == "flash":
-            model.config.attn_implementation = "flash_attention_2"
-        elif config.data.var_len:
-            model.config.attn_implementation = "sdpa"
+        model = AutoModelForMaskedLM.from_pretrained(
+            config.model.huggingface_id, return_dict=False, trust_remote_code=True,
+            attn_implementation="flash_attention_2" if config.model.attn_impl == "flash" else None,
+        )
     else:
         if config.model.model_name == "bert":
             dict_config_model = update_config(
@@ -96,6 +86,13 @@ def load_model(config: Config):
                 config.model, eurobert_config[config.model.model_size]
             )
             model = EuroBERT(dict_config_model)
+        elif "Qwen3" in config.model.model_name:
+            logging.set_verbosity_error()
+            model = Qwen3ForMaskedLM.from_pretrained(
+                config.model.huggingface_id,
+                attn_implementation="flash_attention_2" if config.model.attn_impl == "flash" else None,
+                fused_cross_entropy=config.model.fused_cross_entropy,
+            )
         else:
             raise ValueError(f"Model name {config.model.model_name} is not supported.")
         config.update_config(**dict_config_model)
