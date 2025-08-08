@@ -8,13 +8,13 @@ import torch
 import torch.distributed as dist
 from torch.utils.tensorboard import SummaryWriter
 
-from optimus.trainer.script.cache import Cache
-from optimus.trainer.script.warmup_stable_decay_lr import WarmupStableDecayLR
 from optimus.trainer.configuration.configs import Config
 from optimus.trainer.data import Data
 from optimus.trainer.distributed import Distributed
 from optimus.trainer.model.load import compile_model
 from optimus.trainer.model.tools import ModelTools
+from optimus.trainer.script.cache import Cache
+from optimus.trainer.script.warmup_stable_decay_lr import WarmupStableDecayLR
 
 
 class Pretrain:
@@ -58,6 +58,10 @@ class Pretrain:
                 rf"{self.train_config.output_dir}/{self.train_config.project_name}/tensorboard"
             )
 
+        self.steps_per_epoch = len(self.data.train_dataloader) / (
+            self.train_config.gradient_accumulation_steps
+            * self.system_config.gpu_per_node
+        )
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=self.train_config.lr,
@@ -123,10 +127,6 @@ class Pretrain:
 
         with profiler as prof:
             for i, batch in enumerate(self.data.train_dataloader, start=1):
-                self.config.log_print(
-                    f"Local Rank {self.system_config.local_rank} processing batch {batch}.",
-                    main_only=False,
-                )
                 # First batch processing
                 if self.pre_batch_step(i, skip_threshold):
                     continue
@@ -205,7 +205,7 @@ class Pretrain:
                     ):
                         self.save()
                         self.config.log_print(
-                            f"Remaining steps: {(len(self.data.train_dataloader) - i)/self.train_config.gradient_accumulation_steps}"
+                            f"Remaining steps: {(self.steps_per_epoch * self.train_config.num_epochs) - self.step}"
                         )
 
                     # Profiling
@@ -260,9 +260,9 @@ class Pretrain:
 
         if self.train_config.save_model:
             if self.train_config.fsdp:
-                assert (
-                    self.train_config.save_optimizer
-                ), "FSDP requires saving the optimizer with the model."
+                assert self.train_config.save_optimizer, (
+                    "FSDP requires saving the optimizer with the model."
+                )
                 self.distributed.save_fsdp_model_optimizer(
                     self.model, self.optimizer, path
                 )
@@ -397,18 +397,19 @@ class Pretrain:
                 decay_iters=self.train_config.end_start,
                 final_div_factor=self.train_config.final_div_factor,
                 epochs=self.train_config.num_epochs,
-                steps_per_epoch=len(self.data.train_dataloader),
+                steps_per_epoch=self.steps_per_epoch,
             )
         elif lr_scheduler == "CosineAnnealingLR":
             return torch.optim.lr_scheduler.CosineAnnealingLR(
-                self.optimizer, T_max=len(self.data.train_dataloader)
+                self.optimizer,
+                T_max=self.steps_per_epoch * self.train_config.num_epochs,
             )
         else:
             return torch.optim.lr_scheduler.OneCycleLR(
                 self.optimizer,
                 max_lr=self.train_config.lr,
                 epochs=self.train_config.num_epochs,
-                steps_per_epoch=len(self.data.train_dataloader),
+                steps_per_epoch=self.steps_per_epoch,
                 pct_start=self.train_config.pct_start,
                 div_factor=self.train_config.div_factor,
                 final_div_factor=self.train_config.final_div_factor,
@@ -440,6 +441,9 @@ class Pretrain:
             if self.distributed:
                 dist.barrier()
             self.config.log_print("All ranks with first batch, training will start.")
+            self.config.log_print(
+                f"Remaining steps: {(self.steps_per_epoch * self.train_config.num_epochs) - self.step}"
+            )
 
         if iter <= skip_threshold:
             self.config.log_print(
