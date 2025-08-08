@@ -123,6 +123,16 @@ class Pretrain:
 
         with profiler as prof:
             for i, batch in enumerate(self.data.train_dataloader, start=1):
+                if self.config.system.rank == 0:
+                    if self.config.system.local_rank == 0:
+                        self.config.log_print(
+                            f"Dataloader size: {len(self.data.train_dataloader)}.",
+                            main_only=False
+                        )
+                    self.config.log_print(
+                        f"Local Rank {self.system_config.local_rank} processing batch {batch}.",
+                        main_only=False,
+                    )
                 # First batch processing
                 if self.pre_batch_step(i, skip_threshold):
                     continue
