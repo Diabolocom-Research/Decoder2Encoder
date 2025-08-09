@@ -20,7 +20,7 @@ class TrainConfig:
     eps: float = 1e-5
     fused: bool | None = False
 
-    lr_scheduler: str = "WarmupStableDecayLR"
+    lr_scheduler: str = "OneCycleLR"
     pct_start: float = 0.01
     div_factor: int = 0
     end_start: float = 0

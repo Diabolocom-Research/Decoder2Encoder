@@ -58,10 +58,11 @@ class Pretrain:
                 rf"{self.train_config.output_dir}/{self.train_config.project_name}/tensorboard"
             )
 
-        self.steps_per_epoch = len(self.data.train_dataloader) / (
-            self.train_config.gradient_accumulation_steps
-            * self.system_config.gpu_per_node
+        self.steps_per_epoch = (
+            len(self.data.train_dataloader)
+            / self.train_config.gradient_accumulation_steps
         )
+
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=self.train_config.lr,
