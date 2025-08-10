@@ -148,7 +148,6 @@ class Pretrain:
                         loss = loss / self.config.train.gradient_accumulation_steps
                     loss.backward()
                 total_loss += loss.detach().item()
-                self.scheduler.step()
 
                 # Training step
                 if i % self.train_config.gradient_accumulation_steps == 0 or i == len(
@@ -158,6 +157,7 @@ class Pretrain:
 
                     self.optimizer.step()
                     self.optimizer.zero_grad()
+                    self.scheduler.step()
                     self.step += 1
 
                     end_time = time.time()
