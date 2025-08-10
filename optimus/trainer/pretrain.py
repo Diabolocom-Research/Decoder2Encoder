@@ -58,7 +58,7 @@ class Pretrain:
                 rf"{self.train_config.output_dir}/{self.train_config.project_name}/tensorboard"
             )
 
-        self.steps_per_epoch = (
+        self.steps_per_epoch = int(
             len(self.data.train_dataloader)
             / self.train_config.gradient_accumulation_steps
         )
