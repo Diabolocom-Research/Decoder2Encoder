@@ -11,7 +11,7 @@ from transformers.modeling_layers import (
 )
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
 from transformers.modeling_utils import PreTrainedModel
-from configuration_biqwen import BiQwen3Config
+from .configuration_biqwen import BiQwen3Config
 
 from transformers.modeling_outputs import BaseModelOutput, MaskedLMOutput, SequenceClassifierOutput, TokenClassifierOutput
 
@@ -421,7 +421,7 @@ class BiQwen3Model(BiQwen3PreTrainedModel):
         for encoder_layer in self.layers[: self.config.num_hidden_layers]:
             if output_hidden_states:
                 if attention_mask is not None:
-                    all_hidden_states += (cu_seqlens_to_batch_input(hidden_states, cu_seqlens, max_seqlen)[0],)
+                    all_hidden_states += (cu_seqlens_to_batch_input(hidden_states, cu_seqlens, attention_mask.shape[-1])[0],)
                 else:
                     all_hidden_states += (hidden_states,)
         
@@ -436,14 +436,14 @@ class BiQwen3Model(BiQwen3PreTrainedModel):
             hidden_states = layer_outputs[0]
             if output_attentions:
                 if attention_mask is not None:
-                    all_self_attns += (cu_attention_weight_to_batch(layer_outputs[1], cu_seqlens, max_seqlen),)
+                    all_self_attns += (cu_attention_weight_to_batch(layer_outputs[1], cu_seqlens, attention_mask.shape[-1]),)
 
                 else:
                     all_self_attns += (layer_outputs[1],)
 
         hidden_states = self.norm(hidden_states)
         if attention_mask is not None:
-            hidden_states = cu_seqlens_to_batch_input(hidden_states, cu_seqlens, max_seqlen)
+            hidden_states = cu_seqlens_to_batch_input(hidden_states, cu_seqlens, attention_mask.shape[-1])
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
         

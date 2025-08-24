@@ -28,11 +28,8 @@ class BiQwen3Config(PretrainedConfig):
     BiQwen3 model according to the specified arguments, defining the model architecture. Instantiating a configuration
     with the defaults will yield a similar configuration to that of
     Qwen3-8B [Qwen/Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B) WITH BIDIRECTIONAL ATTENTION MECHANISM.
-
     Configuration objects inherit from [`PretrainedConfig`] and can be used to control the model outputs. Read the
     documentation from [`PretrainedConfig`] for more information.
-
-
     Args:
         vocab_size (`int`, *optional*, defaults to 151936):
             Vocabulary size of the Qwen3 model. Defines the number of different tokens that can be represented by the
@@ -109,16 +106,12 @@ class BiQwen3Config(PretrainedConfig):
             Attention pattern for each layer.
         attention_dropout (`float`, *optional*, defaults to 0.0):
             The dropout ratio for the attention probabilities.
-
     ```python
     >>> from transformers import Qwen3Model, Qwen3Config
-
     >>> # Initializing a Qwen3 style configuration
     >>> configuration = Qwen3Config()
-
     >>> # Initializing a model from the Qwen3-8B style configuration
     >>> model = Qwen3Model(configuration)
-
     >>> # Accessing the model configuration
     >>> configuration = model.config
     ```"""
@@ -160,6 +153,7 @@ class BiQwen3Config(PretrainedConfig):
         rope_scaling=None,
         attention_bias=False,
         attention_dropout=0.0,
+        classifier_pooling="late",
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -182,6 +176,7 @@ class BiQwen3Config(PretrainedConfig):
         self.rope_scaling = rope_scaling
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
+        self.clf_pooling = classifier_pooling
         # Validate the correctness of rotary position embeddings parameters
         # BC: if there is a 'type' field, move it to 'rope_type'.
         if self.rope_scaling is not None and "type" in self.rope_scaling:
