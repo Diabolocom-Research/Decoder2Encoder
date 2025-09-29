@@ -31,7 +31,7 @@ dependencies = [
   "tensorboard==2.19.0",
   "tiktoken==0.7.0",
   "torch==2.4.1",
-  "transformers==4.53.2",
+  "transformers>=4.56.1",
   "zstandard==0.23.0"
 ]
 
