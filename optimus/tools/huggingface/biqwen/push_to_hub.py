@@ -2,7 +2,7 @@ import argparse
 import shutil
 import os
 import torch
-from modeling_biqwen import BiQwen3ForMaskedLM
+from modeling_biqwen_local import BiQwen3ForMaskedLM
 from configuration_biqwen import BiQwen3Config
 from huggingface_hub import create_branch, HfApi, Repository
 from huggingface_hub.utils import RepositoryNotFoundError
@@ -62,6 +62,7 @@ def main():
         
     if args.revision:
         revision = args.weight_path.split("/")[-1]
+        print("Creating a new branch for the revision:", revision)
         create_branch(
             repo_id=f"{args.organization}/{args.model_name}",
             branch=revision,
