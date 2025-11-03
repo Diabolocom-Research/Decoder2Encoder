@@ -24,6 +24,20 @@ try:
 except ImportError:
     LIGER_KERNEL_AVAILABLE = False
 
+
+class CustomEmbedding(torch.nn.Module):
+    """This custom embedding class replaces the torch.nn.Embedding class, which has
+    compilation issues."""
+
+    def __init__(self, vocab_size, embed_dim):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.empty(vocab_size, embed_dim))
+        torch.nn.init.normal_(self.weight, mean=0.0, std=0.02)
+
+    def forward(self, input_ids):
+        return self.weight[input_ids, :]
+
+
 class Qwen3RMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
         """
@@ -124,7 +138,7 @@ def create_packed_seqs_mask(
             and -inf (masked).
     """
     total_len = cu_seq_lens[-1].item()
-    seq_lengths = cu_seq_lens[1:] - cu_seq_lens[:-1]
+    seq_lengths = (cu_seq_lens[1:] - cu_seq_lens[:-1]).to(device)
 
     seq_indices = torch.repeat_interleave(
         torch.arange(len(seq_lengths), device=device),
@@ -187,8 +201,8 @@ class Qwen3Attention(nn.Module):
         self.o_proj = nn.Linear(
             config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.attention_bias
         )
-        self.q_norm = Qwen3RMSNorm(self.head_dim, eps=config.rms_norm_eps)  # unlike olmo, only on the head dim!
-        self.k_norm = Qwen3RMSNorm(self.head_dim, eps=config.rms_norm_eps)  # thus post q_norm does not need reshape
+        self.q_norm = Qwen3RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        self.k_norm = Qwen3RMSNorm(self.head_dim, eps=config.rms_norm_eps)
 
     def forward(
         self,
@@ -257,7 +271,7 @@ class Qwen3EncoderLayer(GradientCheckpointingLayer):
         hidden_states: torch.Tensor,
         cu_seq_lens: Optional[torch.Tensor] = None,
         max_seqlen: Optional[int] = None,
-        position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
+        position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
 
     ) -> tuple[torch.Tensor]:
         residual = hidden_states
@@ -288,7 +302,6 @@ class Qwen3PreTrainedModel(PreTrainedModel):
 class Qwen3RotaryEmbedding(nn.Module):
     def __init__(self, config: Qwen3Config, device=None):
         super().__init__()
-        # BC: "rope_type" was originally "type"
         if hasattr(config, "rope_scaling") and isinstance(config.rope_scaling, dict):
             self.rope_type = config.rope_scaling.get("rope_type", config.rope_scaling.get("type"))
         else:
@@ -304,13 +317,13 @@ class Qwen3RotaryEmbedding(nn.Module):
         self.original_inv_freq = self.inv_freq
 
     @torch.no_grad()
-    @dynamic_rope_update  # power user: used with advanced RoPE types (e.g. dynamic rope)
+    @dynamic_rope_update
     def forward(self, x, position_ids):
         inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1).to(x.device)
         position_ids_expanded = position_ids[:, None, :].float()
 
         device_type = x.device.type if isinstance(x.device.type, str) and x.device.type != "mps" else "cpu"
-        with torch.autocast(device_type=device_type, enabled=False):  # Force float32
+        with torch.autocast(device_type=device_type, enabled=False):
             freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
             emb = torch.cat((freqs, freqs), dim=-1)
             cos = emb.cos() * self.attention_scaling
@@ -325,7 +338,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+        self.embed_tokens = CustomEmbedding(config.vocab_size, config.hidden_size)
         self.layers = nn.ModuleList([Qwen3EncoderLayer(config) for _ in range(config.num_hidden_layers)])
         self.norm = Qwen3RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = Qwen3RotaryEmbedding(config=config)
@@ -339,9 +352,9 @@ class Qwen3Model(Qwen3PreTrainedModel):
         input_ids: torch.LongTensor,
         cu_seq_lens: Optional[torch.Tensor] = None,
         max_seqlen: Optional[int] = None,
-    ) -> torch.Tensor:       
+    ) -> torch.Tensor:
         hidden_states = self.embed_tokens(input_ids)
-        position_ids = torch.arange(len(input_ids), device=input_ids.device).unsqueeze(0)
+        position_ids = torch.arange(len(input_ids), device=hidden_states.device).unsqueeze(0)
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
         for decoder_layer in self.layers[: self.config.num_hidden_layers]:
             hidden_states = decoder_layer(

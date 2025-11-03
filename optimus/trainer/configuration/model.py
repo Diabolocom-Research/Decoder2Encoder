@@ -8,6 +8,7 @@ class ModelConfig:
     )
     tokenizer_path_or_name: str = "meta-llama/Meta-Llama-3-8B-Instruct"
     mask_token_id: int = 128002
+    bos_token_id: int | None = None # Beginning of sequence token id for MNTP objective
     gpu: bool = True
 
     # Model parameters

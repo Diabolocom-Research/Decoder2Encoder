@@ -24,6 +24,7 @@ class Data:
         self.data_config = config.data
         self.system_config = config.system
         self.main_process = config.is_main_process
+        self.MNTP_objective = config.train.MNTP_objective
         self.tokenizer = tokenizer
         self.hf_model = config.model.huggingface_id is not None
 
@@ -107,6 +108,7 @@ class Data:
             mask_probability=self.mask_probability,
             random_probability=self.random_probability,
             tokenizer=self.tokenizer,
+            MNTP_objective=self.MNTP_objective,
         )
 
     def __create_dataloader(self, dataset: StreamingDataset) -> StreamingDataLoader:
@@ -221,6 +223,7 @@ class MaskingDataset(StreamingDataset):
         mask_probability: float,
         random_probability: float,
         tokenizer,
+        MNTP_objective: bool = False,
         *args,
         **kwargs,
     ):
@@ -228,6 +231,7 @@ class MaskingDataset(StreamingDataset):
         self.mlm_probability = mlm_probability
         self.mask_probability = mask_probability
         self.random_probability = random_probability
+        self.MNTP_objective = MNTP_objective
         super(MaskingDataset, self).__init__(*args, **kwargs)
 
     def __getitem__(self, index):
@@ -284,7 +288,10 @@ class MaskingDataset(StreamingDataset):
         random_words = np.random.randint(0, len(self.tokenizer), size=labels.shape)
         inputs[indices_random] = random_words[indices_random]
 
-        # The rest of the time we keep the masked input tokens unchanged
+        # add the bos token and remove last token from inputs for MNTP objective
+        if self.MNTP_objective:
+            inputs = np.concatenate(([self.tokenizer.bos_token_id], inputs[:-1]))
+
         return inputs, labels
 
 

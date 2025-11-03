@@ -57,6 +57,12 @@ def load_tokenizer(config: Config) -> PreTrainedTokenizer | PreTrainedTokenizerF
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
+    if tokenizer.bos_token is None and config.train.MNTP_objective:
+        assert (
+            config.model.bos_token_id is not None
+        ), "bos_token id to use for MNTP is not provided (config.model.bos_token_id)."
+        tokenizer.bos_token = tokenizer.convert_ids_to_tokens(config.model.bos_token_id)
+        tokenizer.bos_token_id = config.model.bos_token_id
 
     if config.verbose:
         config.log_print("Tokenizer loaded successfully.")
