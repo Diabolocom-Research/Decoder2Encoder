@@ -12,7 +12,7 @@
     "AutoModelForSequenceClassification": "modeling_biqwen.BiQwen3ForSequenceClassification",
     "AutoModelForTokenClassification": "modeling_biqwen.BiQwen3ForTokenClassification"
   },
-  "bos_token_id": 151643,
+  "bos_token_id": 151644,
   "eos_token_id": 151645,
   "head_dim": 128,
   "hidden_act": "silu",
