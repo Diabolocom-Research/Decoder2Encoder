@@ -66,7 +66,6 @@ def rotate_half(x):
 
 def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     """Applies Rotary Position Embedding to the query and key tensors.
-
     Args:
         q (`torch.Tensor`): The query tensor.
         k (`torch.Tensor`): The key tensor.
@@ -159,13 +158,11 @@ def create_packed_seqs_mask(
 ) -> torch.Tensor:
     """
     Create a causal or non-causal attention mask for packed sequences.
-
     Args:
         cu_seqlens (torch.Tensor): Cumulative sequence lengths of shape [batch + 1].
         is_causal (bool): If True, create a causal (lower triangular) mask within
             each sequence. If False, a full attention mask is created within each sequence.
         device (torch.device): Target device for the mask.
-
     Returns:
         torch.Tensor: Attention mask of shape [total_len, total_len] with 0.0 (allowed)
             and -inf (masked).

@@ -13,6 +13,7 @@
     "AutoModelForTokenClassification": "modeling_biqwen.BiQwen3ForTokenClassification"
   },
   "bos_token_id": 151644,
+  "clf_pooling": "late",
   "eos_token_id": 151645,
   "head_dim": 128,
   "hidden_act": "silu",
@@ -31,6 +32,6 @@
   "rope_theta": 1000000,
   "tie_word_embeddings": true,
   "torch_dtype": "float32",
-  "transformers_version": "4.54.1",
+  "transformers_version": "4.55.2",
   "vocab_size": 151936
 }
