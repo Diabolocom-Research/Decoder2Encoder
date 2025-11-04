@@ -51,7 +51,7 @@ class TrainConfig:
     mask_probability: float = 1.0
     random_probability: float = 0.0
     original_probability: float = 0.0
-    MNTP_objective: bool = False
+    mntp_objective: bool = False
 
     # Reloading configurations
     skip_reload_scheduler: bool = False

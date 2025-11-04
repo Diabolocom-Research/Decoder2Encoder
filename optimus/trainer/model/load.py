@@ -54,15 +54,21 @@ def load_tokenizer(config: Config) -> PreTrainedTokenizer | PreTrainedTokenizerF
         ), "Mask token id to use is not provided (config.model.mask_token_id)."
         tokenizer.mask_token = "[MASK]"
         tokenizer.mask_token_id = config.model.mask_token_id
+    if tokenizer.bos_token is None and config.data.add_bos_token:
+        assert (
+            config.model.bos_token_id is not None
+        ), "bos_token id is not provided (config.model.bos_token_id)."
+        tokenizer.bos_token = tokenizer.convert_ids_to_tokens(config.model.bos_token_id)
+        tokenizer.bos_token_id = config.model.bos_token_id
+    if tokenizer.eos_token is None and config.data.add_eos_token:
+        assert (
+            config.model.eos_token_id is not None
+        ), "eos_token id is not provided (config.model.eos_token_id)."
+        tokenizer.eos_token = tokenizer.convert_ids_to_tokens(config.model.eos_token_id)
+        tokenizer.eos_token_id = config.model.eos_token_id
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
-    if tokenizer.bos_token is None and config.train.MNTP_objective:
-        assert (
-            config.model.bos_token_id is not None
-        ), "bos_token id to use for MNTP is not provided (config.model.bos_token_id)."
-        tokenizer.bos_token = tokenizer.convert_ids_to_tokens(config.model.bos_token_id)
-        tokenizer.bos_token_id = config.model.bos_token_id
 
     if config.verbose:
         config.log_print("Tokenizer loaded successfully.")

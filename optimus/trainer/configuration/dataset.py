@@ -11,7 +11,10 @@ class DatasetConfig:
     predownload: int = 1
     length: int = 2048
     var_len: bool = False
+    var_len_v2: bool = False
     num_canonical_nodes: int = 0
     pin_memory: bool = True
     step_to_skip: int = 0
     seed: int = 42
+    add_bos_token: bool = False
+    add_eos_token: bool = False

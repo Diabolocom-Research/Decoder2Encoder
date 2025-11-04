@@ -8,8 +8,8 @@ class ModelConfig:
     )
     tokenizer_path_or_name: str = "meta-llama/Meta-Llama-3-8B-Instruct"
     mask_token_id: int = 128002
-    bos_token_id: int | None = None # Beginning of sequence token id for MNTP objective
-    gpu: bool = True
+    bos_token_id: int | None = None
+    eos_token_id: int | None = None
 
     # Model parameters
     model_name: str = "eurobert"
@@ -28,6 +28,7 @@ class ModelConfig:
     attn_impl: str | None = None  # Attention implementation
     rope_base: int | None = None  # Rope base
 
+    gpu: bool = True
     fused_rms_norm: bool = False  # Fused RMS norm
     fused_rope: bool = False  # Fused rope
     fused_swiglu: bool = False  # Fused swiglu

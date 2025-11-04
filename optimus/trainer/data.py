@@ -24,7 +24,7 @@ class Data:
         self.data_config = config.data
         self.system_config = config.system
         self.main_process = config.is_main_process
-        self.MNTP_objective = config.train.MNTP_objective
+        self.mntp_objective = config.train.mntp_objective
         self.tokenizer = tokenizer
         self.hf_model = config.model.huggingface_id is not None
 
@@ -108,7 +108,7 @@ class Data:
             mask_probability=self.mask_probability,
             random_probability=self.random_probability,
             tokenizer=self.tokenizer,
-            MNTP_objective=self.MNTP_objective,
+            mntp_objective=self.mntp_objective,
         )
 
     def __create_dataloader(self, dataset: StreamingDataset) -> StreamingDataLoader:
@@ -127,6 +127,7 @@ class Data:
             collate_fn = (
                 self.to_torch_collate_HF_pad_fn if self.hf_model else
                 self.to_torch_collate_var_len_fn if self.data_config.var_len else
+                self.to_torch_collate_var_len_fn_v2 if self.data_config.var_len_v2 else
                 self.to_torch_collate_fn
             ),
             pin_memory=self.data_config.pin_memory,
@@ -151,6 +152,16 @@ class Data:
             "x": inputs,
             "labels": labels,
         }
+    
+    def to_torch_collate_var_len_fn_v2(self, batch):
+        """
+        Collate function for the dataloader. Prepares the batch for training with variable-length samples.
+        Args:
+            batch: List of tuples (input_seq, label_seq).
+        Returns:
+            dict[str, torch.Tensor]: A dictionary containing input_ids, labels, and cu_seq_lens.
+        """
+        input_seqs, label_seqs = zip(*batch)
 
     def to_torch_collate_var_len_fn(self, batch):
         """
@@ -211,10 +222,10 @@ class Data:
             "labels": padded_labels,
         }
 
+
     # ----------------------
     # Masking Dataset
     # ----------------------
-
 
 class MaskingDataset(StreamingDataset):
     def __init__(
@@ -223,7 +234,7 @@ class MaskingDataset(StreamingDataset):
         mask_probability: float,
         random_probability: float,
         tokenizer,
-        MNTP_objective: bool = False,
+        mntp_objective: bool = False,
         *args,
         **kwargs,
     ):
@@ -231,15 +242,64 @@ class MaskingDataset(StreamingDataset):
         self.mlm_probability = mlm_probability
         self.mask_probability = mask_probability
         self.random_probability = random_probability
-        self.MNTP_objective = MNTP_objective
+        self.mntp_objective = mntp_objective
         super(MaskingDataset, self).__init__(*args, **kwargs)
 
     def __getitem__(self, index):
         item = super().__getitem__(index)
-        inputs, labels = self.__masking_function(item["tokens"])
-        return inputs, labels
+        cu_seq_lens = [0, 10, 25, 128]
 
-    def __masking_function(self, item: Any) -> dict[str, Any]:
+        inputs, cu_seq_lens = self.__online_token_addition(item["tokens"], cu_seq_lens)
+        inputs, labels = self.__masking_function(inputs, cu_seq_lens)
+        if cu_seq_lens is None:
+            return inputs, labels
+        return inputs, labels, cu_seq_lens
+    
+    def __online_token_addition(self, item: Any, cu_seq_lens: Any = None) -> Any:
+        """
+        Add special tokens (BOS or EOS) to the input sequences online during data loading.
+        Args:
+            Item: Item data to which special tokens will be added.
+        Returns:
+            Item: Item data with special tokens added.
+        """
+        if self.add_bos_token:
+            if cu_seq_lens is not None:
+                num_seqs = len(cu_seq_lens) - 1
+                total_len = len(item) + num_seqs
+                insert_pos = cu_seq_lens[:-1] + np.arange(num_seqs)
+
+                new_inputs = np.empty(total_len, dtype=item.dtype)
+                new_inputs[insert_pos] = self.tokenizer.bos_token_id
+                mask = np.ones(total_len, dtype=bool)
+                mask[insert_pos] = False
+                new_inputs[mask] = item
+
+                item = new_inputs
+                cu_seq_lens = cu_seq_lens + np.arange(len(cu_seq_lens))
+            else:
+                item = np.concatenate(([self.tokenizer.bos_token_id], item))
+
+        if self.add_eos_token:
+            if cu_seq_lens is not None:
+                num_seqs = len(cu_seq_lens) - 1
+                total_len = len(item) + num_seqs
+                insert_pos = cu_seq_lens[1:] + np.arange(num_seqs)
+
+                new_inputs = np.empty(total_len, dtype=item.dtype)
+                new_inputs[insert_pos] = self.tokenizer.eos_token_id
+                mask = np.ones(total_len, dtype=bool)
+                mask[insert_pos] = False
+                new_inputs[mask] = item
+
+                item = new_inputs
+                cu_seq_lens = cu_seq_lens + np.arange(len(cu_seq_lens))
+            else:
+                item = np.concatenate((item, [self.tokenizer.eos_token_id]))
+
+        return item, cu_seq_lens
+
+    def __masking_function(self, item: Any, cu_seq_lens: Any = None) -> dict[str, Any]:
         """
         Prepare masked token inputs and labels for masked language modeling.
 
@@ -288,9 +348,23 @@ class MaskingDataset(StreamingDataset):
         random_words = np.random.randint(0, len(self.tokenizer), size=labels.shape)
         inputs[indices_random] = random_words[indices_random]
 
-        # add the bos token and remove last token from inputs for MNTP objective
-        if self.MNTP_objective:
-            inputs = np.concatenate(([self.tokenizer.bos_token_id], inputs[:-1]))
+        # Align inputs and labels for MTNP objective
+        if self.mntp_objective:
+            if cu_seq_lens is not None:
+                num_seqs = len(cu_seq_lens) - 1
+
+                mask = np.ones(len(inputs), dtype=bool)
+                mask[cu_seq_lens[1:] - 1] = False
+                inputs = inputs[mask]
+
+                label_mask = np.ones(len(labels), dtype=bool)
+                label_mask[cu_seq_lens[:-1]] = False
+                labels = labels[label_mask]
+
+                cu_seq_lens = cu_seq_lens - np.arange(num_seqs + 1)
+            else:
+                inputs = inputs[:-1]
+                labels = labels[1:]
 
         return inputs, labels
 

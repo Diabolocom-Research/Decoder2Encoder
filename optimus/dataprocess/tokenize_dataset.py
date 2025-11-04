@@ -137,7 +137,7 @@ def _worker(
             if not tiktoken:
                 input_ids = tokenizer.apply_chat_template(texts, tokenize=True)
                 eos_id = tokenizer.eos_id if tiktoken else tokenizer.eos_token_id
-                input_ids = [ids + [eos_id] for ids in input_ids]
+                input_ids = [ids + [eos_id] for ids in input_ids] #TODO check if needed
                 return input_ids
             else:
                 raise ValueError("Chat template encoding with tiktoken is not supported")
