@@ -109,6 +109,8 @@ class Data:
             random_probability=self.random_probability,
             tokenizer=self.tokenizer,
             mntp_objective=self.mntp_objective,
+            add_bos_token=self.data_config.add_bos_token,
+            add_eos_token=self.data_config.add_eos_token,
         )
 
     def __create_dataloader(self, dataset: StreamingDataset) -> StreamingDataLoader:
@@ -227,6 +229,7 @@ class Data:
     # Masking Dataset
     # ----------------------
 
+
 class MaskingDataset(StreamingDataset):
     def __init__(
         self,
@@ -235,6 +238,8 @@ class MaskingDataset(StreamingDataset):
         random_probability: float,
         tokenizer,
         mntp_objective: bool = False,
+        add_bos_token:  bool = False,
+        add_eos_token:  bool = False,
         *args,
         **kwargs,
     ):
@@ -243,17 +248,17 @@ class MaskingDataset(StreamingDataset):
         self.mask_probability = mask_probability
         self.random_probability = random_probability
         self.mntp_objective = mntp_objective
+        self.add_bos_token = add_bos_token
+        self.add_eos_token = add_eos_token
         super(MaskingDataset, self).__init__(*args, **kwargs)
 
     def __getitem__(self, index):
         item = super().__getitem__(index)
         cu_seq_lens = [0, 10, 25, 128]
-
         inputs, cu_seq_lens = self.__online_token_addition(item["tokens"], cu_seq_lens)
         inputs, labels = self.__masking_function(inputs, cu_seq_lens)
-        if cu_seq_lens is None:
-            return inputs, labels
-        return inputs, labels, cu_seq_lens
+        return (inputs, labels, cu_seq_lens)if cu_seq_lens else (inputs, labels)
+        
     
     def __online_token_addition(self, item: Any, cu_seq_lens: Any = None) -> Any:
         """
