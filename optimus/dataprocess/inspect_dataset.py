@@ -26,7 +26,12 @@ def print_sample(index: int, sample: Dict[str, Any], tokenizer, tiktoken: bool) 
     print("Size:", len(tokens))
     print("Metadata:")
     print(json.dumps(metadata, indent=2))
-
+    
+    # cu_seqlens only exists in packed data
+    cu_seqlens = sample.get("cu_seqlens")
+    if cu_seqlens is not None:
+        print("Cumulative Sequence Lengths:", cu_seqlens)
+    print()
 
 def inspect_dataset(
     input_dir: str, tokenizer: str, num_samples: int = 5, tiktoken: bool = False
