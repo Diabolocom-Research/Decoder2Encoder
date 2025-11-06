@@ -126,10 +126,12 @@ class Data:
             batch_size=self.data_config.batch_size,
             num_workers=self.data_config.num_workers,
             prefetch_factor=self.data_config.prefetch_factor or None,
-            collate_fn = (
-                self.to_torch_collate_HF_pad_fn if self.hf_model else
-                self.to_torch_collate_var_len_fn if self.data_config.var_len else
-                self.to_torch_collate_fn
+            collate_fn=(
+                self.to_torch_collate_HF_pad_fn
+                if self.hf_model
+                else self.to_torch_collate_var_len_fn
+                if self.data_config.var_len
+                else self.to_torch_collate_fn
             ),
             pin_memory=self.data_config.pin_memory,
             drop_last=True,
@@ -153,14 +155,14 @@ class Data:
             "x": inputs,
             "labels": labels,
         }
-    
+
     def to_torch_collate_var_len_fn(self, batch):
         """
         Collate function for the dataloader. Prepares the batch for training with variable-length samples.
-        
+
         Args:
             batch (list): List of tuples (input_seq, label_seq, cu_seqlen).
-        
+
         Returns:
             dict[str, torch.Tensor]: Dictionary containing input_ids, labels, cu_seqlens, and max_seqlen.
         """
@@ -171,7 +173,7 @@ class Data:
 
         parts = [torch.zeros(1, dtype=torch.long)]
         offset = 0
-        max_seqlen = 0        
+        max_seqlen = 0
         for seq, cu_seq in zip(input_seqs, cu_seqlens):
             parts.append(torch.as_tensor(cu_seq[1:], dtype=torch.long) + offset)
             offset += cu_seq[-1]
@@ -184,8 +186,6 @@ class Data:
             "cu_seqlens": cu_seqlens_tensor,
             "max_seqlen": max_seqlen,
         }
-
-        
 
     # DEPRECATED
     # def to_torch_collate_var_len_fn(self, batch):
@@ -225,7 +225,7 @@ class Data:
     def to_torch_collate_HF_pad_fn(self, batch):
         """
         Collate function for the dataloader (used by HuggingFace). Prepares the batch with padding and attention masks.
-        
+
         Args:
             batch: List of tuples (input_seq, label_seq), where each seq is a list of token IDs.
 
@@ -238,7 +238,9 @@ class Data:
         label_tensors = [torch.tensor(seq, dtype=torch.long) for seq in label_seqs]
 
         padded_inputs = pad_sequence(input_tensors, batch_first=True, padding_value=0)
-        padded_labels = pad_sequence(label_tensors, batch_first=True, padding_value=-100)
+        padded_labels = pad_sequence(
+            label_tensors, batch_first=True, padding_value=-100
+        )
         attention_mask = (padded_inputs != 0).long()
 
         return {
@@ -246,7 +248,6 @@ class Data:
             "attention_mask": attention_mask,
             "labels": padded_labels,
         }
-
 
     # ----------------------
     # Masking Dataset
@@ -261,8 +262,8 @@ class MaskingDataset(StreamingDataset):
         random_probability: float,
         tokenizer,
         mntp_objective: bool = False,
-        add_bos_token:  bool = False,
-        add_eos_token:  bool = False,
+        add_bos_token: bool = False,
+        add_eos_token: bool = False,
         *args,
         **kwargs,
     ):
@@ -277,11 +278,12 @@ class MaskingDataset(StreamingDataset):
 
     def __getitem__(self, index):
         item = super().__getitem__(index)
-        inputs, cu_seqlens = self.__online_token_addition(item["tokens"], item["cu_seqlens"])
+        inputs, cu_seqlens = self.__online_token_addition(
+            item["tokens"], item["cu_seqlens"]
+        )
         inputs, labels = self.__masking_function(inputs, cu_seqlens)
-        return (inputs, labels, cu_seqlens)if cu_seqlens else (inputs, labels)
-        
-    
+        return (inputs, labels, cu_seqlens) if cu_seqlens else (inputs, labels)
+
     def __online_token_addition(self, item: Any, cu_seqlens: Any = None) -> Any:
         """
         Add special tokens (BOS or EOS) to the input sequences online during data loading.

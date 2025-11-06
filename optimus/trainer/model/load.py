@@ -54,13 +54,13 @@ def load_tokenizer(config: Config) -> PreTrainedTokenizer | PreTrainedTokenizerF
         ), "Mask token id to use is not provided (config.model.mask_token_id)."
         tokenizer.mask_token = "[MASK]"
         tokenizer.mask_token_id = config.model.mask_token_id
-    if tokenizer.bos_token is None and config.data.add_bos_token:
+    if config.data.add_bos_token and tokenizer.bos_token is None:
         assert (
             config.model.bos_token_id is not None
         ), "bos_token id is not provided (config.model.bos_token_id)."
         tokenizer.bos_token = tokenizer.convert_ids_to_tokens(config.model.bos_token_id)
         tokenizer.bos_token_id = config.model.bos_token_id
-    if tokenizer.eos_token is None and config.data.add_eos_token:
+    if config.data.add_eos_token and tokenizer.eos_token is None:
         assert (
             config.model.eos_token_id is not None
         ), "eos_token id is not provided (config.model.eos_token_id)."
