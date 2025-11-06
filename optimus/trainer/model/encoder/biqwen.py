@@ -120,7 +120,7 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     return hidden_states.reshape(num_key_value_heads * n_rep, slen, head_dim)
 
 def create_packed_seqs_mask(
-    cu_seq_lens: torch.Tensor,
+    cu_seqlens: torch.Tensor,
     causal: bool = True,
     device: torch.device = torch.device("cpu"),
 ) -> torch.Tensor:
@@ -128,7 +128,7 @@ def create_packed_seqs_mask(
     Create a causal or non-causal attention mask for packed sequences.
 
     Args:
-        cu_seq_lens (torch.Tensor): Cumulative sequence lengths of shape [batch + 1].
+        cu_seqlens (torch.Tensor): Cumulative sequence lengths of shape [batch + 1].
         is_causal (bool): If True, create a causal (lower triangular) mask within
             each sequence. If False, a full attention mask is created within each sequence.
         device (torch.device): Target device for the mask.
@@ -137,8 +137,8 @@ def create_packed_seqs_mask(
         torch.Tensor: Attention mask of shape [total_len, total_len] with 0.0 (allowed)
             and -inf (masked).
     """
-    total_len = cu_seq_lens[-1].item()
-    seq_lengths = (cu_seq_lens[1:] - cu_seq_lens[:-1]).to(device)
+    total_len = cu_seqlens[-1].item()
+    seq_lengths = (cu_seqlens[1:] - cu_seqlens[:-1]).to(device)
 
     seq_indices = torch.repeat_interleave(
         torch.arange(len(seq_lengths), device=device),
@@ -160,7 +160,7 @@ def create_packed_seqs_mask(
 
 def sdpa_attention_forward(
         q, k, v, 
-        cu_seq_lens, 
+        cu_seqlens, 
         scaling, 
         dropout: float = 0.0, 
         causal: bool = True
@@ -168,7 +168,7 @@ def sdpa_attention_forward(
     """Compute scaled dot-product attention for packed sequences."""
     attn_weights = torch.matmul(q, k.transpose(1, 2)) * scaling
 
-    mask = create_packed_seqs_mask(cu_seq_lens, causal, q.device)
+    mask = create_packed_seqs_mask(cu_seqlens, causal, q.device)
     attn_weights = attn_weights + mask
 
     attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(q.dtype)
@@ -208,7 +208,7 @@ class Qwen3Attention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        cu_seq_lens: Optional[torch.Tensor],
+        cu_seqlens: Optional[torch.Tensor],
         max_seqlen: Optional[int],
     ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[tuple[torch.Tensor]]]:
         input_shape = hidden_states.shape[:-1]
@@ -231,8 +231,8 @@ class Qwen3Attention(nn.Module):
                 query_states.transpose(0, 1),
                 key_states.transpose(0, 1),
                 value_states.transpose(0, 1),
-                cu_seq_lens,
-                cu_seq_lens,
+                cu_seqlens,
+                cu_seqlens,
                 max_seqlen_q=max_seqlen,
                 max_seqlen_k=max_seqlen,
                 dropout_p=self.attention_dropout if self.training else 0.0,
@@ -244,7 +244,7 @@ class Qwen3Attention(nn.Module):
                 query_states,
                 key_states,
                 value_states,
-                cu_seq_lens=cu_seq_lens,
+                cu_seqlens=cu_seqlens,
                 dropout=self.attention_dropout if self.training else 0.0,
                 scaling=self.scaling,
                 causal=False,
@@ -269,7 +269,7 @@ class Qwen3EncoderLayer(GradientCheckpointingLayer):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        cu_seq_lens: Optional[torch.Tensor] = None,
+        cu_seqlens: Optional[torch.Tensor] = None,
         max_seqlen: Optional[int] = None,
         position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
 
@@ -279,7 +279,7 @@ class Qwen3EncoderLayer(GradientCheckpointingLayer):
 
         hidden_states = self.self_attn(
             hidden_states=hidden_states,
-            cu_seq_lens=cu_seq_lens,
+            cu_seqlens=cu_seqlens,
             max_seqlen=max_seqlen,
             position_embeddings=position_embeddings,
         )
@@ -350,7 +350,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
     def forward(
         self,
         input_ids: torch.LongTensor,
-        cu_seq_lens: Optional[torch.Tensor] = None,
+        cu_seqlens: Optional[torch.Tensor] = None,
         max_seqlen: Optional[int] = None,
     ) -> torch.Tensor:
         hidden_states = self.embed_tokens(input_ids)
@@ -359,7 +359,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
         for decoder_layer in self.layers[: self.config.num_hidden_layers]:
             hidden_states = decoder_layer(
                 hidden_states,
-                cu_seq_lens=cu_seq_lens,
+                cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
                 position_embeddings=position_embeddings,
             )
@@ -387,14 +387,14 @@ class Qwen3ForMaskedLM(Qwen3PreTrainedModel):
         self,
         x: torch.LongTensor,
         *,
-        cu_seq_lens: Optional[torch.Tensor] = None,
+        cu_seqlens: Optional[torch.Tensor] = None,
         max_seqlen: Optional[int] = None,
         labels: Optional[torch.LongTensor] = None,
         **kwargs
     ) -> tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
         hidden_states = self.model(
             input_ids=x,
-            cu_seq_lens=cu_seq_lens,
+            cu_seqlens=cu_seqlens,
             max_seqlen=max_seqlen,
         )
         logits = self.lm_head(hidden_states)

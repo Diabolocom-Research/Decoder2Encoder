@@ -444,7 +444,7 @@ def _write_iterable(
     columns = {
         "tokens": "ndarray:int32",
         "metadata": "json",
-        "cu_seq_lens": "json",
+        "cu_seqlens": "json",
     }
     start = time.time()
     prefix = f"{desc_prefix}" if desc_prefix else ""
