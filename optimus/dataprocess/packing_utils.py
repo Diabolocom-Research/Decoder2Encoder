@@ -4,13 +4,10 @@
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 
-import collections
 import logging
-from typing import Any, Dict, List, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
-from tqdm import tqdm
-
 
 PACKING_ALGOS = ["first_fit_decreasing", "first_fit_shuffle"]
 
@@ -112,13 +109,9 @@ def create_packing_strategy(
                         sequence lengths assigned to that bin.
           pack_metadata: A dict that records packing metadata, for instance the max number of samples per bin.
     """
-
-    logger.info(f"Packing sequences to length {pack_size}...")
-
     all_seq_lens = []
     for i, count in enumerate(histogram):
         all_seq_lens.extend([i] * count)
-
     packing_fn = globals()[packing_algorithm]
     assignments: List[List[int]] = packing_fn(all_seq_lens, pack_size)
     packed_seq_lens = [sum(x) for x in assignments]
@@ -138,10 +131,4 @@ def create_packing_strategy(
         "min_packed_seqlen": min_packed_seqlen,
     }
 
-    logger.debug("Packed sequence lengths:")
-    logger.debug(packed_seq_lens)
-    logger.info(f"Packing is {packing_efficiency:.2f}% efficient")
-    logger.info(
-        f"For pack size {pack_size}, average number of sequences per pack is n = {packing_factor:.3f}"
-    )
     return assignments, packing_metadata
