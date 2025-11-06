@@ -5,6 +5,7 @@ import itertools
 import json
 import pathlib
 import time
+import warnings
 from typing import Any, Dict, Iterable, List, Optional, Tuple, TypedDict
 
 import fire
@@ -18,6 +19,11 @@ from optimus.dataprocess.packing_utils import (
     PACKING_ALGOS,
     create_packing_strategy,
 )
+
+warnings.filterwarnings(
+    "ignore", category=RuntimeWarning, message=".*found in sys.modules.*"
+)
+
 
 Metadata = dict[str, Any] | list[Any]
 

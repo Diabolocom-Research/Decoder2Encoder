@@ -129,7 +129,6 @@ class Data:
             collate_fn = (
                 self.to_torch_collate_HF_pad_fn if self.hf_model else
                 self.to_torch_collate_var_len_fn if self.data_config.var_len else
-                self.to_torch_collate_var_len_fn_v2 if self.data_config.var_len_v2 else
                 self.to_torch_collate_fn
             ),
             pin_memory=self.data_config.pin_memory,
@@ -155,49 +154,73 @@ class Data:
             "labels": labels,
         }
     
-    def to_torch_collate_var_len_fn_v2(self, batch):
-        """
-        Collate function for the dataloader. Prepares the batch for training with variable-length samples.
-        Args:
-            batch: List of tuples (input_seq, label_seq).
-        Returns:
-            dict[str, torch.Tensor]: A dictionary containing input_ids, labels, and cu_seq_lens.
-        """
-        input_seqs, label_seqs = zip(*batch)
-
     def to_torch_collate_var_len_fn(self, batch):
         """
         Collate function for the dataloader. Prepares the batch for training with variable-length samples.
+        
         Args:
-            batch: List of tuples (input_seq, label_seq).
+            batch (list): List of tuples (input_seq, label_seq, cu_seqlen).
+        
         Returns:
-            dict[str, torch.Tensor]: A dictionary containing input_ids, labels, and cu_seq_lens.
+            dict[str, torch.Tensor]: Dictionary containing input_ids, labels, cu_seqlens, and max_seqlen.
         """
-        input_seqs, label_seqs = zip(*batch)
+        input_seqs, label_seqs, cu_seqlens = zip(*batch)
 
-        # Compute cumulative sequence lengths
-        lengths = torch.tensor([len(seq) for seq in input_seqs], dtype=torch.int32)
-        cu_seq_lens = torch.cat(
-            [
-                torch.zeros(1, dtype=torch.int32),
-                torch.cumsum(lengths, dim=0, dtype=torch.int32),
-            ]
-        )
+        x = torch.cat([torch.as_tensor(seq, dtype=torch.long) for seq in input_seqs])
+        y = torch.cat([torch.as_tensor(seq, dtype=torch.long) for seq in label_seqs])
 
-        # Concatenate inputs and labels into single tensors
-        inputs = torch.cat(
-            [torch.tensor(seq, dtype=torch.long) for seq in input_seqs], dim=0
-        )
-        labels = torch.cat(
-            [torch.tensor(seq, dtype=torch.long) for seq in label_seqs], dim=0
-        )
+        parts = [torch.zeros(1, dtype=torch.long)]
+        offset = 0
+        max_seqlen = 0        
+        for seq, cu_seq in zip(input_seqs, cu_seqlens):
+            parts.append(torch.as_tensor(cu_seq[1:], dtype=torch.long) + offset)
+            offset += cu_seq[-1]
+            max_seqlen = max(max_seqlen, len(seq))
+        cu_seqlens_tensor = torch.cat(parts)
 
         return {
-            "x": inputs,
-            "labels": labels,
-            "cu_seq_lens": cu_seq_lens,
-            "max_seqlen": lengths.max().item(),
+            "x": x,
+            "labels": y,
+            "cu_seqlens": cu_seqlens_tensor,
+            "max_seqlen": max_seqlen,
         }
+
+        
+
+    # DEPRECATED
+    # def to_torch_collate_var_len_fn(self, batch):
+    #     """
+    #     Collate function for the dataloader. Prepares the batch for training with variable-length samples.
+    #     Args:
+    #         batch: List of tuples (input_seq, label_seq).
+    #     Returns:
+    #         dict[str, torch.Tensor]: A dictionary containing input_ids, labels, and cu_seqlens.
+    #     """
+    #     input_seqs, label_seqs = zip(*batch)
+
+    #     # Compute cumulative sequence lengths
+    #     lengths = torch.tensor([len(seq) for seq in input_seqs], dtype=torch.int32)
+    #     cu_seqlens = torch.cat(
+    #         [
+    #             torch.zeros(1, dtype=torch.int32),
+    #             torch.cumsum(lengths, dim=0, dtype=torch.int32),
+    #         ]
+    #     )
+
+    #     # Concatenate inputs and labels into single tensors
+    #     inputs = torch.cat(
+    #         [torch.tensor(seq, dtype=torch.long) for seq in input_seqs], dim=0
+    #     )
+    #     labels = torch.cat(
+    #         [torch.tensor(seq, dtype=torch.long) for seq in label_seqs], dim=0
+    #     )
+
+    #     return {
+    #         "x": inputs,
+    #         "labels": labels,
+    #         "cu_seqlens": cu_seqlens,
+    #         "max_seqlen": lengths.max().item(),
+    #     }
 
     def to_torch_collate_HF_pad_fn(self, batch):
         """
@@ -254,13 +277,12 @@ class MaskingDataset(StreamingDataset):
 
     def __getitem__(self, index):
         item = super().__getitem__(index)
-        cu_seq_lens = [0, 10, 25, 128]
-        inputs, cu_seq_lens = self.__online_token_addition(item["tokens"], cu_seq_lens)
-        inputs, labels = self.__masking_function(inputs, cu_seq_lens)
-        return (inputs, labels, cu_seq_lens)if cu_seq_lens else (inputs, labels)
+        inputs, cu_seqlens = self.__online_token_addition(item["tokens"], item["cu_seqlens"])
+        inputs, labels = self.__masking_function(inputs, cu_seqlens)
+        return (inputs, labels, cu_seqlens)if cu_seqlens else (inputs, labels)
         
     
-    def __online_token_addition(self, item: Any, cu_seq_lens: Any = None) -> Any:
+    def __online_token_addition(self, item: Any, cu_seqlens: Any = None) -> Any:
         """
         Add special tokens (BOS or EOS) to the input sequences online during data loading.
         Args:
@@ -269,10 +291,10 @@ class MaskingDataset(StreamingDataset):
             Item: Item data with special tokens added.
         """
         if self.add_bos_token:
-            if cu_seq_lens is not None:
-                num_seqs = len(cu_seq_lens) - 1
+            if cu_seqlens is not None:
+                num_seqs = len(cu_seqlens) - 1
                 total_len = len(item) + num_seqs
-                insert_pos = cu_seq_lens[:-1] + np.arange(num_seqs)
+                insert_pos = cu_seqlens[:-1] + np.arange(num_seqs)
 
                 new_inputs = np.empty(total_len, dtype=item.dtype)
                 new_inputs[insert_pos] = self.tokenizer.bos_token_id
@@ -281,15 +303,15 @@ class MaskingDataset(StreamingDataset):
                 new_inputs[mask] = item
 
                 item = new_inputs
-                cu_seq_lens = cu_seq_lens + np.arange(len(cu_seq_lens))
+                cu_seqlens = cu_seqlens + np.arange(len(cu_seqlens))
             else:
                 item = np.concatenate(([self.tokenizer.bos_token_id], item))
 
         if self.add_eos_token:
-            if cu_seq_lens is not None:
-                num_seqs = len(cu_seq_lens) - 1
+            if cu_seqlens is not None:
+                num_seqs = len(cu_seqlens) - 1
                 total_len = len(item) + num_seqs
-                insert_pos = cu_seq_lens[1:] + np.arange(num_seqs)
+                insert_pos = cu_seqlens[1:] + np.arange(num_seqs)
 
                 new_inputs = np.empty(total_len, dtype=item.dtype)
                 new_inputs[insert_pos] = self.tokenizer.eos_token_id
@@ -298,13 +320,13 @@ class MaskingDataset(StreamingDataset):
                 new_inputs[mask] = item
 
                 item = new_inputs
-                cu_seq_lens = cu_seq_lens + np.arange(len(cu_seq_lens))
+                cu_seqlens = cu_seqlens + np.arange(len(cu_seqlens))
             else:
                 item = np.concatenate((item, [self.tokenizer.eos_token_id]))
 
-        return item, cu_seq_lens
+        return item, cu_seqlens
 
-    def __masking_function(self, item: Any, cu_seq_lens: Any = None) -> dict[str, Any]:
+    def __masking_function(self, item: Any, cu_seqlens: Any = None) -> dict[str, Any]:
         """
         Prepare masked token inputs and labels for masked language modeling.
 
@@ -355,18 +377,18 @@ class MaskingDataset(StreamingDataset):
 
         # Align inputs and labels for MTNP objective
         if self.mntp_objective:
-            if cu_seq_lens is not None:
-                num_seqs = len(cu_seq_lens) - 1
+            if cu_seqlens is not None:
+                num_seqs = len(cu_seqlens) - 1
 
                 mask = np.ones(len(inputs), dtype=bool)
-                mask[cu_seq_lens[1:] - 1] = False
+                mask[cu_seqlens[1:] - 1] = False
                 inputs = inputs[mask]
 
                 label_mask = np.ones(len(labels), dtype=bool)
-                label_mask[cu_seq_lens[:-1]] = False
+                label_mask[cu_seqlens[:-1]] = False
                 labels = labels[label_mask]
 
-                cu_seq_lens = cu_seq_lens - np.arange(num_seqs + 1)
+                cu_seqlens = cu_seqlens - np.arange(num_seqs + 1)
             else:
                 inputs = inputs[:-1]
                 labels = labels[1:]
