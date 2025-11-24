@@ -1,73 +1,73 @@
-"""Test that gemma3_packed produces same outputs as gemma3"""
+"""Test that gemma3_packed produces the same outputs as gemma3"""
 
 import torch
 import torch.nn as nn
 from typing import List, Tuple
-import sys
-import os
 
 from gemma3 import Gemma3ForCausalLM as Gemma3TextModel
 from gemma3_packed import Gemma3ForCausalLM as Gemma3PackedTextModel
-
 from transformers.models.gemma3.configuration_gemma3 import Gemma3TextConfig
 
-# Read attention implementation from environment variable, default to "eager"
-ATTN_IMPLEMENTATION = os.getenv("ATTN_IMPLEMENTATION", "eager")
 
-
-def create_test_config(
-    vocab_size=1000,
-    hidden_size=512,
-    num_layers=4,
-    num_heads=8,
-    num_kv_heads=4,
-    bidirectional=False,
-    layer_type="sliding_attention",
-    sliding_window=2,
-    layer_types=None 
-):
-    if layer_types is None:
-        layer_types = [layer_type] * num_layers
-    
-    return Gemma3TextConfig(
-        vocab_size=vocab_size,
-        hidden_size=hidden_size,
-        intermediate_size=2048,
-        num_hidden_layers=num_layers,
-        num_attention_heads=num_heads,
-        num_key_value_heads=num_kv_heads,
-        max_position_embeddings=2048,
-        rms_norm_eps=1e-6,
-        hidden_activation="gelu_pytorch_tanh",
-        attention_dropout=0.0,
+def create_test_config(**kwargs):
+    """Create a test config with sensible defaults. Pass kwargs to override."""
+    defaults = dict(
+        _sliding_window_pattern=6,
+        architectures=["Gemma3ForCausalLM"],
         attention_bias=False,
+        attention_dropout=0.0,
+        attn_logit_softcapping=None,
+        bos_token_id=2,
+        dtype=torch.float32,
+        eos_token_id=1,
+        final_logit_softcapping=None,
+        head_dim=256,
+        hidden_activation="gelu_pytorch_tanh",
+        hidden_size=640,
+        initializer_range=0.02,
+        intermediate_size=2048,
+        sliding_window=512,
+        max_position_embeddings=32768,
+        model_type="gemma3_text",
+        num_attention_heads=4,
+        num_hidden_layers=18,
+        num_key_value_heads=1,
+        pad_token_id=0,
         query_pre_attn_scalar=256,
-        use_bidirectional_attention=bidirectional,
-        layer_types=layer_types,
-        rope_parameters={
-            "full_attention": {"rope_type": "default", "rope_theta": 10000.0},
-            "sliding_attention": {"rope_type": "default", "rope_theta": 10000.0},
-        },
-        sliding_window=sliding_window,
-        _attn_implementation="eager",
+        rms_norm_eps=1e-06,
+        rope_local_base_freq=10000.0,
+        rope_scaling=None,
+        rope_theta=1000000.0,
+        layer_types=["sliding_attention"]*5 + ["full_attention"] + ["sliding_attention"]*5 + ["full_attention"] + ["sliding_attention"]*5 + ["full_attention"],
+        transformers_version="4.56.2",
+        use_bidirectional_attention=False,
+        use_cache=True,
+        vocab_size=262144,
     )
+    
+    # Update with any kwargs that match
+    for key in defaults:
+        if key in kwargs:
+            defaults[key] = kwargs[key]
+    
+    return Gemma3TextConfig(**defaults)
 
 
 def pack_sequences(seqs: List[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor, int]:
-    """Pack sequences into single tensor with cu_seqlens"""
-    lens = [len(s) for s in seqs]
-    cu_seqlens = torch.tensor([0] + [sum(lens[:i+1]) for i in range(len(seqs))], dtype=torch.long)
+    """Pack multiple sequences into one tensor, return cumulative lengths."""
+    lengths = [len(s) for s in seqs]
+    cu_seqlens = torch.tensor([0] + [sum(lengths[:i+1]) for i in range(len(seqs))], dtype=torch.int32)
     packed = torch.cat(seqs, dim=0)
-    return packed, cu_seqlens, max(lens)
+    return packed, cu_seqlens, max(lengths)
 
 
 def unpack_sequences(packed: torch.Tensor, cu_seqlens: torch.Tensor) -> List[torch.Tensor]:
-    """Unpack flat tensor back to list of sequences"""
+    """Split packed tensor back into individual sequences."""
     return [packed[cu_seqlens[i]:cu_seqlens[i+1]] for i in range(len(cu_seqlens) - 1)]
 
 
 def pad_sequences(seqs: List[torch.Tensor], pad_val=0) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Pad sequences to same length"""
+    """Pad sequences to the same length and return attention mask."""
     batch_size = len(seqs)
     max_len = max(len(s) for s in seqs)
     device = seqs[0].device
@@ -84,7 +84,7 @@ def pad_sequences(seqs: List[torch.Tensor], pad_val=0) -> Tuple[torch.Tensor, to
 
 
 def copy_weights(src: nn.Module, tgt: nn.Module):
-    """Copy weights from source to target model"""
+    """Copy weights from source model to target model."""
     src_dict = src.state_dict()
     tgt_dict = tgt.state_dict()
     
@@ -97,26 +97,81 @@ def copy_weights(src: nn.Module, tgt: nn.Module):
     tgt.load_state_dict(tgt_dict)
 
 
-def test_equivalence(config, seqs, tol=1e-5, pretrained=False, device="cpu"):
-    """Test packed vs unpacked models produce same outputs"""
+def test_equivalence(config, seqs, tol=1e-5, pretrained=False, device="cpu", attn_implementation="eager"):
+    """Test that packed and unpacked models give the same outputs."""
     print(f"\nSequence lengths: {[len(s) for s in seqs]}")
-    
 
+    # Load or create models
     if pretrained:
-        print('Using pretrained models from HuggingFace')
-        standard = Gemma3TextModel.from_pretrained("google/gemma-3-270m").to(device).eval()
-        packed = Gemma3PackedTextModel.from_pretrained("google/gemma-3-270m").to(device).eval()
-        standard.config._attn_implementation = ATTN_IMPLEMENTATION #sdpa is not comparable to packed custom sdpa
-        packed.config._attn_implementation = ATTN_IMPLEMENTATION
-    else:
-        # Create and prepare models from scratch
-        standard = Gemma3TextModel(config).to(device).eval()
-        packed = Gemma3PackedTextModel(config).to(device).eval()
-        standard.config._attn_implementation = ATTN_IMPLEMENTATION
-        packed.config._attn_implementation = ATTN_IMPLEMENTATION
-        copy_weights(standard, packed)
+        print('Loading pretrained models from HuggingFace')
+        standard = Gemma3TextModel.from_pretrained("google/gemma-3-270m").to(device).to(config.dtype).eval()
+        packed = Gemma3PackedTextModel.from_pretrained("google/gemma-3-270m").to(device).to(config.dtype).eval()
+        standard.config._attn_implementation = attn_implementation
+        packed.config._attn_implementation = attn_implementation
 
+        # Apply config settings to both models
+        for key in config.to_dict().keys():
+            if hasattr(config, key):
+                setattr(standard.config, key, getattr(config, key))
+                setattr(packed.config, key, getattr(config, key))
+            else:
+                print(f"Warning: config missing attribute {key}")
+
+        # Verify configs match
+        assert standard.config.to_dict() == packed.config.to_dict(), "Configs don't match"
+
+        # Update attention layer settings (they don't auto-update when config changes)
+        for layer in standard.model.layers:
+            layer.self_attn.is_causal = not config.use_bidirectional_attention
+            if layer.self_attn.layer_type == "sliding_attention":
+                layer.self_attn.sliding_window = config.sliding_window
         
+        for layer in packed.model.layers:
+            layer.self_attn.is_causal = not config.use_bidirectional_attention
+            if layer.self_attn.layer_type == "sliding_attention":
+                layer.self_attn.sliding_window = config.sliding_window
+    
+    else:
+        # Create models from scratch
+        standard = Gemma3TextModel(config).to(device).to(config.dtype).eval()
+        packed = Gemma3PackedTextModel(config).to(device).to(config.dtype).eval()
+        standard.config._attn_implementation = attn_implementation
+        packed.config._attn_implementation = attn_implementation
+
+        assert standard.config.to_dict() == packed.config.to_dict(), "Configs don't match"
+        copy_weights(standard, packed)
+    
+    if attn_implementation == 'flash_attention_2':
+        # WHY MLP NEEDS FLOAT64 FOR FLASH_ATTENTION_2:
+        # -------------------------------------------------
+        # Flash attention internally uses packed sequences (flash_attn_varlen_func) for both
+        # standard and packed models, so attention outputs match perfectly.
+        #
+        # However, MLP layers operate on different tensor shapes:
+        #   - Standard model: [batch, padded_seq_len, hidden] → uses batched matmul (bmm)
+        #   - Packed model:   [total_seq_len, hidden]         → uses regular matmul (mm)
+        #
+        # Using float64 for MLP computation eliminates these kernel precision differences
+        # while keeping attention in bfloat16 (required by flash attention).
+        # -------------------------------------------------
+        def make_float64_mlp_forward(mlp):
+            orig_forward = mlp.forward
+            def float64_forward(x):
+                orig_dtype = x.dtype
+                x = x.to(torch.float64)
+                with torch.autocast(device_type='cuda', enabled=False):
+                    result = orig_forward(x)
+                return result.to(orig_dtype)
+            return float64_forward
+
+        for layer in standard.model.layers:
+            layer.mlp.to(torch.float64)
+            layer.mlp.forward = make_float64_mlp_forward(layer.mlp)
+        
+        for layer in packed.model.layers:
+            layer.mlp.to(torch.float64)
+            layer.mlp.forward = make_float64_mlp_forward(layer.mlp)
+
     # Prepare inputs
     padded_ids, attn_mask = pad_sequences(seqs, config.pad_token_id)
     padded_ids, attn_mask = padded_ids.to(device), attn_mask.to(device)
@@ -124,18 +179,20 @@ def test_equivalence(config, seqs, tol=1e-5, pretrained=False, device="cpu"):
     packed_ids, cu_seqlens, max_seqlen = pack_sequences(seqs)
     packed_ids, cu_seqlens = packed_ids.to(device), cu_seqlens.to(device)
     
-    # Run inference
+    # Run both models
     with torch.no_grad():
-        print("\n--- Running STANDARD (gemma3.py) ---")
+        print("\n--- Running standard model ---")
         standard_out = standard(input_ids=padded_ids, attention_mask=attn_mask, output_hidden_states=True).hidden_states[-1]
-        print("\n--- Running PACKED (gemma3_packed.py) ---")
+        
+        print("\n--- Running packed model ---")
         packed_out = packed.model(input_ids=packed_ids, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen)
+        
         print("\n--- Comparing outputs ---")
     
-    # Compare
+    # Compare results
     unpacked = unpack_sequences(packed_out, cu_seqlens)
     max_diff = 0.0
-    all_ok = True
+    all_match = True
     
     for i, (seq, unpacked_seq) in enumerate(zip(seqs, unpacked)):
         seq_len = len(seq)
@@ -143,113 +200,107 @@ def test_equivalence(config, seqs, tol=1e-5, pretrained=False, device="cpu"):
         diff = torch.abs(std_seq - unpacked_seq).max().item()
         max_diff = max(max_diff, diff)
         ok = diff < tol
-        all_ok = all_ok and ok
+        all_match = all_match and ok
         print(f"  Seq {i}: len={seq_len:3d}, diff={diff:.2e} {'✓' if ok else '✗'}")
     
-    print(f"Max diff: {max_diff:.2e} - {'PASS' if all_ok else 'FAIL'}")
-    return all_ok
-
-
-def test(pretrained=False):
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print("\n" + "="*60)
-    print(f"Testing Gemma3 vs Gemma3Packed (pretrained={pretrained})")
-    print(f"Device: {device}")
-    print(f"Attention Implementation: {ATTN_IMPLEMENTATION}")
-    
-    # Test 1: causal
-    print("\n" + "="*60)
-    print("Test 1: causal")
-    print("="*60)
-    config = create_test_config(hidden_size=256, num_layers=2, num_heads=4, num_kv_heads=2)
-    seqs = [torch.randint(0, 1000, (10,)), torch.randint(0, 1000, (15,)), torch.randint(0, 1000, (8,))]
-    t1 = test_equivalence(config, seqs, pretrained=pretrained, device=device)
-    
-    # Test 2: causal + sliding
-    print("\n" + "="*60)
-    print("Test 2: causal + sliding")
-    print("="*60)
-    config = create_test_config(hidden_size=256, num_layers=2, num_heads=4, num_kv_heads=2, layer_type="sliding_attention", sliding_window=2)
-    seqs = [torch.randint(0, 1000, (10,)), torch.randint(0, 1000, (15,)), torch.randint(0, 1000, (8,))]
-    t2 = test_equivalence(config, seqs, pretrained=pretrained, device=device)
-    
-    # Test 3: bidirectional
-    print("\n" + "="*60)
-    print("Test 3: bidirectional")
-    print("="*60)
-    config = create_test_config(hidden_size=256, num_layers=2, num_heads=4, num_kv_heads=2, bidirectional=True)
-    seqs = [torch.randint(0, 1000, (32,)), torch.randint(0, 1000, (28,)), 
-            torch.randint(0, 1000, (35,)), torch.randint(0, 1000, (30,))]
-    t3 = test_equivalence(config, seqs, pretrained=pretrained, device=device)
-
-    # Test 4: bidirectional + sliding
-    print("\n" + "="*60)
-    print("Test 4: bidirectional + sliding")
-    print("="*60)
-    config = create_test_config(hidden_size=256, num_layers=2, num_heads=4, num_kv_heads=2, bidirectional=True, layer_type="sliding_attention", sliding_window=2)
-    seqs = [torch.randint(0, 1000, (32,)), torch.randint(0, 1000, (28,)), 
-            torch.randint(0, 1000, (35,)), torch.randint(0, 1000, (30,))]
-    t4 = test_equivalence(config, seqs, pretrained=pretrained, device=device)
-    
-    # Test 5: causal with mixed layers [full_attention, sliding_attention]
-    print("\n" + "="*60)
-    print("Test 5: Causal with mixed layers [full_attention, sliding_attention]")
-    print("="*60)
-    config = create_test_config(
-        hidden_size=256, 
-        num_layers=2, 
-        num_heads=4, 
-        num_kv_heads=2, 
-        bidirectional=False,
-        layer_types=["full_attention", "sliding_attention"],
-        sliding_window=2
-    )
-    seqs = [torch.randint(0, 1000, (10,)), torch.randint(0, 1000, (15,)), torch.randint(0, 1000, (8,))]
-    t5 = test_equivalence(config, seqs, pretrained=pretrained, device=device)
-    
-    # Test 6: bidirectional with mixed layers [full_attention, sliding_attention]
-    print("\n" + "="*60)
-    print("Test 6: Bidirectional with mixed layers [full_attention, sliding_attention]")
-    print("="*60)
-    config = create_test_config(
-        hidden_size=256, 
-        num_layers=2, 
-        num_heads=4, 
-        num_kv_heads=2, 
-        bidirectional=True,
-        layer_types=["full_attention", "sliding_attention"],
-        sliding_window=2
-    )
-    seqs = [torch.randint(0, 1000, (32,)), torch.randint(0, 1000, (28,)), 
-            torch.randint(0, 1000, (35,)), torch.randint(0, 1000, (30,))]
-    t6 = test_equivalence(config, seqs, pretrained=pretrained, device=device)
-    
-    # Summary
-    print("\n" + "="*60)
-    print("SUMMARY")
-    print("="*60)
-    print(f"Test 1: {'PASS' if t1 else 'FAIL'}")
-    print(f"Test 2: {'PASS' if t2 else 'FAIL'}")
-    print(f"Test 3: {'PASS' if t3 else 'FAIL'}")
-    print(f"Test 4: {'PASS' if t4 else 'FAIL'}")
-    print(f"Test 5: {'PASS' if t5 else 'FAIL'}")
-    print(f"Test 6: {'PASS' if t6 else 'FAIL'}")
-    print("="*60)
-    
-    return all([t1, t2, t3, t4, t5, t6])
+    print(f"Max diff: {max_diff:.2e} - {'PASS' if all_match else 'FAIL'}")
+    return all_match
 
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--seed", type=int, default=42)
-    args = parser.parse_args()
-    
-    torch.manual_seed(args.seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(args.seed)
-    
-    test(pretrained=False)
+    # Test different configurations
+    test_configs = [
+        {
+            "name": "eager + float64 + causal",
+            "pretrained": True,
+            "device": "cuda",
+            "attn_implementation": "eager",
+            "dtype": torch.float64,
+            "use_bidirectional_attention": False,
+            "seed": 42,
+        },
+        {
+            "name": "eager + float64 + bidirectional",
+            "pretrained": True,
+            "device": "cuda",
+            "attn_implementation": "eager",
+            "dtype": torch.float64,
+            "use_bidirectional_attention": True,
+            "seed": 42,
+        },
+        {
+            "name": "flash_attention_2 + bfloat16 + causal (MLPs in float64)",
+            "pretrained": True,
+            "device": "cuda",
+            "attn_implementation": "flash_attention_2",
+            "dtype": torch.bfloat16,
+            "use_bidirectional_attention": False,
+            "seed": 42,
+        },
+        {
+            "name": "flash_attention_2 + bfloat16 + bidirectional (MLPs in float64)",
+            "pretrained": True,
+            "device": "cuda",
+            "attn_implementation": "flash_attention_2",
+            "dtype": torch.bfloat16,
+            "use_bidirectional_attention": True,
+            "seed": 42,
+        },
+    ]
 
-    test(pretrained=True)
+    results = []
+
+    for i, test_config in enumerate(test_configs):
+        # Set random seed for reproducibility
+        torch.manual_seed(test_config["seed"])
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(test_config["seed"])
+
+        # Print what we're testing
+        print("\n" + "#"*70)
+        print(f"# TEST {i + 1}: {test_config['name']}")
+        print("#"*70)
+        print(f"Attention:      {test_config['attn_implementation']}")
+        print(f"Dtype:          {test_config['dtype']}")
+        print(f"Bidirectional:  {test_config['use_bidirectional_attention']}")
+
+        config = create_test_config(**test_config)
+
+        # Test 1: Different length sequences
+        print("\n" + "-"*50)
+        print("Test: Variable-length sequences [30, 300]")
+        print("-"*50)
+        seqs = [torch.randint(0, 1000, (30,)), torch.randint(0, 1000, (300,))]
+        result1 = test_equivalence(
+            config,
+            seqs,
+            pretrained=test_config["pretrained"],
+            device=test_config["device"],
+            attn_implementation=test_config["attn_implementation"]
+        )
+
+        # Test 2: Same length sequences
+        print("\n" + "-"*50)
+        print("Test: Same-length sequences [30, 30]")
+        print("-"*50)
+        seqs = [torch.randint(0, 1000, (30,)), torch.randint(0, 1000, (30,))]
+        result2 = test_equivalence(
+            config,
+            seqs,
+            pretrained=test_config["pretrained"],
+            device=test_config["device"],
+            attn_implementation=test_config["attn_implementation"]
+        )
+
+        results.append({
+            "name": test_config["name"],
+            "variable_length": "PASS" if result1 else "FAIL",
+            "same_length": "PASS" if result2 else "FAIL",
+        })
+
+    # Print summary of all tests
+    print("\n" + "="*70)
+    print("TEST SUMMARY")
+    print("="*70)
+    for r in results:
+        print(f"{r['name']:50} | var: {r['variable_length']} | same: {r['same_length']}")
