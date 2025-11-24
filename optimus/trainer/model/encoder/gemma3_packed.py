@@ -184,18 +184,13 @@ def apply_rotary_pos_emb(q, k, cos, sin):
 
     Note: cos/sin are already correctly indexed for packed sequences because
     position_ids are created to restart at 0 for each sequence. We just need
-    to broadcast them to match the query/key dimensions.
+    to broadcast them to match the query/key dimensions."""
+    # Shape: [1, total_len, head_dim] -> [total_len, head_dim]
+    cos = cos.squeeze(0)
+    sin = sin.squeeze(0)
 
-    Args:
-        q: [num_heads, total_len, head_dim]
-        k: [num_heads, total_len, head_dim]
-        cos: [total_len, head_dim]
-        sin: [total_len, head_dim]
-        cu_seqlens: Not used, kept for API compatibility
-    """
-    # cos/sin already have correct values at each absolute position
-    # Just add batch dimension for broadcasting: [1, total_len, head_dim]
-    
+    # Now cos/sin will broadcast correctly with q/k
+    # [num_heads, total_len, head_dim] * [total_len, head_dim] -> [num_heads, total_len, head_dim]
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
 
@@ -221,74 +216,46 @@ def create_packed_seqs_mask(
     window_size: Optional[tuple[int, int]] = None,
 ) -> torch.Tensor:
     """
-    Create an attention mask for packed sequences with optional sliding window.
-
-    Args:
-        cu_seqlens: Cumulative sequence lengths [batch + 1]
-        causal: If True, apply causal masking
-        device: Target device
-        window_size: (left_window, right_window) or None for full attention
-            - left_window: positions to the left (e.g., 2048)
-            - right_window: positions to the right (e.g., 2048 for bidirectional, 0 for causal)
-            - Use (-1, -1) or None for no window restriction
-
-    Returns:
-        Attention mask [total_len, total_len] with 0.0 (attend) and -inf (masked)
+    Builds a block-diagonal attention mask for packed sequences.
+    Returns shape [total_len, total_len] with 0.0 for attention and -inf for masked.
     """
     total_len = cu_seqlens[-1].item()
     seq_lengths = (cu_seqlens[1:] - cu_seqlens[:-1]).to(device)
-
-    # 1 - Sequence Boundary Mask 
-    # Prevent attention across different sequences in the batch
-    seq_indices = torch.repeat_interleave(
+    
+    # Map each token to its sequence index: [0, 0, 1, 1, 1, 2...]
+    seq_ids = torch.repeat_interleave(
         torch.arange(len(seq_lengths), device=device),
         seq_lengths
     )
-    seq_mask = seq_indices.unsqueeze(0) == seq_indices.unsqueeze(1)
+    
+    # Block diagonal: prevent attention across different sequences
+    mask = seq_ids.unsqueeze(0) == seq_ids.unsqueeze(1)
 
-    # 2 - Causal Mask (if needed) 
     if causal:
-        causal_mask = torch.tril(
-            torch.ones(total_len, total_len, device=device, dtype=torch.bool)
-        )
-        combined_mask = seq_mask & causal_mask
-    else:
-        combined_mask = seq_mask
+        # Standard causal lower-triangular mask
+        mask &= torch.tril(torch.ones(total_len, total_len, device=device, dtype=torch.bool))
 
-    # 3 - Sliding Window Mask (if specified) 
     if window_size is not None:
-        left_window, right_window = window_size
+        left, right = window_size
         
-        # Only apply if not (-1, -1) which means full attention
-        if left_window >= 0 or right_window >= 0:
-            # Create position-based distance matrix
-            positions = torch.arange(total_len, device=device)
-            # distance[i, j] = j - i (how far j is from i)
-            distance = positions.unsqueeze(0) - positions.unsqueeze(1)
-            
-            # Window constraints:
-            # - Can attend if distance is in range [-left_window, right_window]
-            # - distance < 0 means looking backward (left)
-            # - distance > 0 means looking forward (right)
-            if left_window >= 0:
-                within_left = distance >= -left_window
-            else:
-                within_left = torch.ones_like(distance, dtype=torch.bool)
-            
-            if right_window >= 0:
-                within_right = distance <= right_window
-            else:
-                within_right = torch.ones_like(distance, dtype=torch.bool)
-            
-            window_mask = within_left & within_right
-            combined_mask = combined_mask & window_mask
+        # Calculate relative position within each sequence 
+        # (global_pos - seq_start_pos) to handle window offsets correctly
+        start_indices = torch.repeat_interleave(cu_seqlens[:-1].to(device), seq_lengths)
+        relative_pos = torch.arange(total_len, device=device) - start_indices
 
-    # 4 - Convert to attention mask format 
-    attention_mask = torch.full((total_len, total_len), float('-inf'), device=device)
-    attention_mask.masked_fill_(combined_mask, 0.0)
+        # dist = key_pos - query_pos
+        distance = relative_pos.unsqueeze(0) - relative_pos.unsqueeze(1)
 
-    return attention_mask
+        if left >= 0:
+            mask &= (distance >= -left)
+        if right >= 0:
+            mask &= (distance <= right)
 
+    # Convert boolean mask to additive attention mask
+    attn_mask = torch.full((total_len, total_len), float('-inf'), device=device)
+    attn_mask.masked_fill_(mask, 0.0)
+    
+    return attn_mask
 
 def sdpa_attention_forward(
         q, k, v, 
@@ -297,22 +264,36 @@ def sdpa_attention_forward(
         dropout: float = 0.0, 
         causal: bool = True,
         window_size: Optional[tuple[int, int]] = None,
+        softcap: Optional[float] = None,
     ):
     """Compute scaled dot-product attention for packed sequences."""
     attn_weights = torch.matmul(q, k.transpose(1, 2)) * scaling
 
-    mask = create_packed_seqs_mask(cu_seqlens, causal, q.device, window_size)
+    # 2. Apply Softcapping (Gemma 3 specific)
+    # Must be done before masking because tanh(0) = 0, but tanh(-inf) = -1
+    if softcap is not None:
+        attn_weights = attn_weights / softcap
+        attn_weights = torch.tanh(attn_weights)
+        attn_weights = attn_weights * softcap
+
+    # 3. Apply Block-Diagonal Mask
+    # This prevents cross-sequence attention and handles causal/window masking
+    mask = create_packed_seqs_mask(cu_seqlens, causal=causal, device=q.device, window_size=window_size,)
+    
     attn_weights = attn_weights + mask
 
+    # 4. Softmax and Dropout
     attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(q.dtype)
     attn_weights = nn.functional.dropout(attn_weights, p=dropout)
+
+    # 5. Compute Output
     attn_output = torch.matmul(attn_weights, v)
     attn_output = attn_output.transpose(0, 1).contiguous()
 
     return attn_output, attn_weights
 
 class Gemma3Attention(nn.Module):
-    """Multi-headed attention from 'Attention Is All You Need' paper with packed sequence support"""
+    """Multi-headed attention from 'Attention Is All You Need' paper"""
 
     def __init__(self, config: Gemma3TextConfig, layer_idx: int):
         super().__init__()
@@ -338,6 +319,8 @@ class Gemma3Attention(nn.Module):
             config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.attention_bias
         )
         self.attn_logit_softcapping = self.config.attn_logit_softcapping
+        self.sliding_window = config.sliding_window if self.layer_type == "sliding_attention" else None
+        self.is_sliding = self.layer_type == "sliding_attention"
 
         self.q_norm = Gemma3RMSNorm(dim=config.head_dim, eps=config.rms_norm_eps)
         self.k_norm = Gemma3RMSNorm(dim=config.head_dim, eps=config.rms_norm_eps)
@@ -377,16 +360,16 @@ class Gemma3Attention(nn.Module):
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
-        # In your attention layer:
-        if self.layer_type == "sliding_attention" and not self.is_causal:
-            # Bidirectional sliding window (can look left AND right)
-            window = (self.config.sliding_window - 1, self.config.sliding_window - 1)
-        elif self.layer_type == "sliding_attention" and self.is_causal:
-            # Causal sliding window (only look left)
-            window = (self.config.sliding_window - 1, 0)
+        # Compute window size for attention
+        if self.layer_type == "sliding_attention" and self.sliding_window is not None:
+            # At least one sequence is long enough for sliding window to matter
+            if not self.is_causal:
+                window = (self.sliding_window - 1, self.sliding_window - 1)
+            else:
+                window = (self.sliding_window - 1, 0)
         else:
             # Full attention (no window restriction)
-            window = None  # or (-1, -1)
+            window = (-1, -1)
 
 
         # Use flash attention if available and configured
@@ -414,7 +397,8 @@ class Gemma3Attention(nn.Module):
                 dropout=self.attention_dropout if self.training else 0.0,
                 scaling=self.scaling,
                 causal=self.is_causal,
-                window_size=window
+                window_size=window,
+                softcap=self.attn_logit_softcapping,
             )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
@@ -474,6 +458,15 @@ class Gemma3PreTrainedModel(PreTrainedModel):
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn = True
     _supports_sdpa = True
+    _supports_flex_attn = True
+
+    _can_compile_fullgraph = True
+    _supports_attention_backend = True
+    _can_record_outputs = {
+        "hidden_states": Gemma3DecoderLayer,
+        "attentions": Gemma3Attention,
+    }
+    #input_modalities = ["image", "text"]
 
     def _init_weights(self, module):
         super()._init_weights(module)
@@ -483,17 +476,15 @@ class Gemma3PreTrainedModel(PreTrainedModel):
 
 
 class Gemma3TextModel(Gemma3PreTrainedModel):
-    """
-    Gemma3 Text Model with packed sequence support for efficient training.
-    Input is expected as packed sequences with cu_seqlens.
-    """
+    config: Gemma3TextConfig
+    input_modalities = "text"
 
     def __init__(self, config: Gemma3TextConfig):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
-        # Gemma3 downcasts the below to bfloat16, causing sqrt(3072)=55.4256 to become 55.5
+        # Gemma3 downcasts the below to bfloat16, causing sqrt(3072)=55.4256 to become 55.5. See https://github.com/huggingface/transformers/pull/29402
         self.embed_tokens = Gemma3TextScaledWordEmbedding(
             config.vocab_size, config.hidden_size, self.padding_idx, embed_scale=self.config.hidden_size**0.5
         )
@@ -532,7 +523,7 @@ class Gemma3TextModel(Gemma3PreTrainedModel):
             # Generate position IDs that restart at 0 for each sequence
             position_ids_list = []
             for i in range(len(cu_seqlens) - 1):
-                seq_len = cu_seqlens[i + 1] - cu_seqlens[i]
+                seq_len = (cu_seqlens[i + 1] - cu_seqlens[i]).item()
                 position_ids_list.append(torch.arange(seq_len, device=hidden_states.device))
             position_ids = torch.cat(position_ids_list).unsqueeze(0)
         else:
@@ -562,6 +553,10 @@ class Gemma3ForCausalLM(Gemma3PreTrainedModel):
     Gemma3 for Masked Language Modeling with packed sequences.
     """
     _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
+    _tp_plan = {"lm_head": "colwise_rep"}
+    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
+    config: Gemma3TextConfig
+    base_model_prefix = "model"
 
     def __init__(self, config: Gemma3TextConfig, fused_cross_entropy: bool = False):
         super().__init__(config)
