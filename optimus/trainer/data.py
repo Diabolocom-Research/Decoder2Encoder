@@ -25,6 +25,7 @@ class Data:
         self.system_config = config.system
         self.main_process = config.is_main_process
         self.mntp_objective = config.train.mntp_objective
+        self.knowledge_distillation = config.train.knowledge_distillation
         self.tokenizer = tokenizer
         self.hf_model = config.model.huggingface_id is not None
 
@@ -111,6 +112,7 @@ class Data:
             mntp_objective=self.mntp_objective,
             add_bos_token=self.data_config.add_bos_token,
             add_eos_token=self.data_config.add_eos_token,
+            knowledge_distillation=self.knowledge_distillation,
         )
 
     def __create_dataloader(self, dataset: StreamingDataset) -> StreamingDataLoader:
@@ -127,11 +129,9 @@ class Data:
             num_workers=self.data_config.num_workers,
             prefetch_factor=self.data_config.prefetch_factor or None,
             collate_fn=(
-                self.to_torch_collate_HF_pad_fn
-                if self.hf_model
+                self.to_torch_collate_HF_pad_fn if self.hf_model
+                else self.to_torch_collate_var_len_fn_with_KD if self.knowledge_distillation
                 else self.to_torch_collate_var_len_fn
-                if self.data_config.var_len
-                else self.to_torch_collate_fn
             ),
             pin_memory=self.data_config.pin_memory,
             drop_last=True,
@@ -139,22 +139,6 @@ class Data:
 
         dataloader._get_batch_size = MethodType(_get_batch_size, dataloader)
         return dataloader
-
-    def to_torch_collate_fn(self, batch):
-        """
-        Collate function for the dataloader. This function is used to prepare the batch for training. All samples should be of the same length.
-        Args:
-            batch: Batch of data to be collated.
-        Returns:
-            dict[str, Any]: A dictionary containing the input_ids and labels for the batch.
-        """
-        batch = np.array(batch)
-        inputs = torch.tensor(batch[:, 0], dtype=torch.long)
-        labels = torch.tensor(batch[:, 1], dtype=torch.long)
-        return {
-            "x": inputs,
-            "labels": labels,
-        }
 
     def to_torch_collate_var_len_fn(self, batch):
         """
@@ -186,41 +170,12 @@ class Data:
             "cu_seqlens": cu_seqlens_tensor,
             "max_seqlen": max_seqlen,
         }
-
-    # DEPRECATED
-    # def to_torch_collate_var_len_fn(self, batch):
-    #     """
-    #     Collate function for the dataloader. Prepares the batch for training with variable-length samples.
-    #     Args:
-    #         batch: List of tuples (input_seq, label_seq).
-    #     Returns:
-    #         dict[str, torch.Tensor]: A dictionary containing input_ids, labels, and cu_seqlens.
-    #     """
-    #     input_seqs, label_seqs = zip(*batch)
-
-    #     # Compute cumulative sequence lengths
-    #     lengths = torch.tensor([len(seq) for seq in input_seqs], dtype=torch.int32)
-    #     cu_seqlens = torch.cat(
-    #         [
-    #             torch.zeros(1, dtype=torch.int32),
-    #             torch.cumsum(lengths, dim=0, dtype=torch.int32),
-    #         ]
-    #     )
-
-    #     # Concatenate inputs and labels into single tensors
-    #     inputs = torch.cat(
-    #         [torch.tensor(seq, dtype=torch.long) for seq in input_seqs], dim=0
-    #     )
-    #     labels = torch.cat(
-    #         [torch.tensor(seq, dtype=torch.long) for seq in label_seqs], dim=0
-    #     )
-
-    #     return {
-    #         "x": inputs,
-    #         "labels": labels,
-    #         "cu_seqlens": cu_seqlens,
-    #         "max_seqlen": lengths.max().item(),
-    #     }
+    
+    def to_torch_collate_var_len_fn_with_KD(self, batch):
+        output = {}
+        output["prompts"] = [item.pop() for item in batch]
+        output.update(self.to_torch_collate_var_len_fn(batch))
+        return output
 
     def to_torch_collate_HF_pad_fn(self, batch):
         """
@@ -264,6 +219,7 @@ class MaskingDataset(StreamingDataset):
         mntp_objective: bool = False,
         add_bos_token: bool = False,
         add_eos_token: bool = False,
+        knowledge_distillation: bool = False,
         *args,
         **kwargs,
     ):
@@ -274,15 +230,22 @@ class MaskingDataset(StreamingDataset):
         self.mntp_objective = mntp_objective
         self.add_bos_token = add_bos_token
         self.add_eos_token = add_eos_token
+        self.knowledge_distillation = knowledge_distillation
         super(MaskingDataset, self).__init__(*args, **kwargs)
 
     def __getitem__(self, index):
         item = super().__getitem__(index)
+
         inputs, cu_seqlens = self.__online_token_addition(
             item["tokens"], item["cu_seqlens"]
         )
         inputs, labels = self.__masking_function(inputs, cu_seqlens)
-        return (inputs, labels, cu_seqlens) if cu_seqlens else (inputs, labels)
+
+        return (
+            [inputs, labels, cu_seqlens, item["tokens"]] if self.knowledge_distillation
+            else [inputs, labels, cu_seqlens] if cu_seqlens is not None
+            else [inputs, labels]
+        )
 
     def __online_token_addition(self, item: Any, cu_seqlens: Any = None) -> Any:
         """

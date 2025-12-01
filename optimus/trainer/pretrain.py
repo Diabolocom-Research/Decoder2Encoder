@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import os
 import time
@@ -15,6 +16,7 @@ from optimus.trainer.model.load import compile_model
 from optimus.trainer.model.tools import ModelTools
 from optimus.trainer.script.cache import Cache
 from optimus.trainer.script.warmup_stable_decay_lr import WarmupStableDecayLR
+from optimus.trainer.script.distillation.knowledge_distillation import KnowledgeDistillation
 
 
 class Pretrain:
@@ -74,6 +76,19 @@ class Pretrain:
 
         self.scheduler = self.get_scheduler(self.train_config.lr_scheduler)
         self.step = 0
+
+        # Knowledge Distillation setup
+        if self.train_config.knowledge_distillation:
+            self.asyncio_loop = asyncio.get_event_loop()
+            self.KnowledgeDistillation = KnowledgeDistillation(
+                tokenizer=self.data.tokenizer,
+                num_logprobs=self.train_config.kd_num_logprobs,
+                num_output_chunks=self.train_config.kd_num_output_chunks,
+                kd_temperature=self.train_config.kd_temperature,
+                teacher_temperature=self.train_config.kd_teacher_temperature,
+                api_key=self.train_config.kd_api_key,
+                base_url=self.train_config.kd_base_url,
+            )
 
         # Resume training if a checkpoint is provided
         if self.train_config.reload_checkpoint:
@@ -143,6 +158,25 @@ class Pretrain:
                     with autocast:
                         if self.config.model.huggingface_id:
                             loss = self.model(**batch)[0]
+                        if self.train_config.knowledge_distillation:
+                            # Asynchronously teacher forward pass and synchronous student forward pass
+                            teacher_forward = self.KnowledgeDistillation.get_teacher_forward(
+                                    batch.pop("prompts"), batch["labels"]
+                                )
+                            teacher_task = self.asyncio_loop.create_task(teacher_forward)
+                            logits, ce_loss = self.model(**batch, cache=self.cache)
+                            
+                            # Ensure the teacher task is complete
+                            if not teacher_task.done():
+                                self.asyncio_loop.run_until_complete(teacher_task)
+                            target_token_ids, target_logprobs, target_mask = teacher_task.result()
+
+                            kl_loss = self.KnowledgeDistillation.loss(
+                                student_logits=logits,
+                                target_token_ids=target_token_ids,
+                                target_logprobs=target_logprobs,
+                                target_mask=target_mask,
+                            )
                         else:
                             _, loss = self.model(**batch, cache=self.cache)
                         loss = loss / self.config.train.gradient_accumulation_steps
