@@ -3,6 +3,7 @@
 import torch
 import torch.nn as nn
 from typing import List, Tuple
+from transformers import AutoTokenizer
 
 from gemma3 import Gemma3ForCausalLM as Gemma3TextModel
 from gemma3_packed import Gemma3ForCausalLM as Gemma3PackedTextModel
@@ -208,6 +209,20 @@ def test_equivalence(config, seqs, tol=1e-5, pretrained=False, device="cpu", att
 
 
 if __name__ == "__main__":
+    # Initialize tokenizer once
+    tokenizer = AutoTokenizer.from_pretrained("google/gemma-3-270m")
+    
+    # Define real text inputs
+    text_samples_var_len = [
+        "Ceci est la première phrase elle est courte.",
+        "Ceci est la deuxième phrase qui est un peu plus longue que la première.",
+    ]
+    
+    text_samples_same_len = [
+        "Attention is all you need.",
+        "Attention is all you need." # Duplicate to ensure exact same length
+    ]
+
     # Test different configurations
     test_configs = [
         {
@@ -266,27 +281,33 @@ if __name__ == "__main__":
 
         config = create_test_config(**test_config)
 
-        # Test 1: Different length sequences
+        # Test 1: Real Variable-length sequences
         print("\n" + "-"*50)
-        print("Test: Variable-length sequences [30, 300]")
-        print("-"*50)
-        seqs = [torch.randint(0, 1000, (30,)), torch.randint(0, 1000, (300,))]
+        print(f"Test: Real Variable-length sequences (Batch size: {len(text_samples_var_len)})")
+        print("-" * 50)
+        
+        # Tokenize and create tensors
+        # add_special_tokens=True adds BOS if configured in tokenizer
+        seqs_var = [torch.tensor(tokenizer.encode(t), dtype=torch.long) for t in text_samples_var_len]
+        
         result1 = test_equivalence(
             config,
-            seqs,
+            seqs_var,
             pretrained=test_config["pretrained"],
             device=test_config["device"],
             attn_implementation=test_config["attn_implementation"]
         )
 
-        # Test 2: Same length sequences
+        # Test 2: Real Same-length sequences
         print("\n" + "-"*50)
-        print("Test: Same-length sequences [30, 30]")
+        print(f"Test: Real Same-length sequences (Batch size: {len(text_samples_same_len)})")
         print("-"*50)
-        seqs = [torch.randint(0, 1000, (30,)), torch.randint(0, 1000, (30,))]
+        
+        seqs_same = [torch.tensor(tokenizer.encode(t), dtype=torch.long) for t in text_samples_same_len]
+
         result2 = test_equivalence(
             config,
-            seqs,
+            seqs_same,
             pretrained=test_config["pretrained"],
             device=test_config["device"],
             attn_implementation=test_config["attn_implementation"]
