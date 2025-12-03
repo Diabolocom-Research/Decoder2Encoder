@@ -231,7 +231,8 @@ class Gemma3DecoderLayer(GradientCheckpointingLayer):
 
 class Gemma3PreTrainedModel(PreTrainedModel):
     config: Gemma3Config
-
+    _supports_flash_attn = True
+    
     def _init_weights(self, module):
         super()._init_weights(module)
         # if isinstance(module, Gemma3MultiModalProjector):

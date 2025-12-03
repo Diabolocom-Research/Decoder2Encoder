@@ -1,17 +1,19 @@
-from transformers.models.gemma3.configuration_gemma3 import Gemma3Config
+from transformers.models.gemma3.configuration_gemma3 import Gemma3TextConfig
 from transformers.models.gemma3.modeling_gemma3 import Gemma3ForCausalLM as Base
 from optimus.trainer.model.encoder.bigemma3 import Gemma3ForCausalLM as Packed
 
 from transformers import AutoTokenizer
 import torch
 
-config = Gemma3Config.from_pretrained("google/gemma-3-270m")
-config.use_bidirectional_attention = True
-# config._attn_implementation = "flash_attention_2"
+model = "/lus/work/CT10/c1816236/nboizard/models/Gemma"
 
-base = Base.from_pretrained("google/gemma-3-270m", config=config)
-pack = Packed.from_pretrained("google/gemma-3-270m", config=config)
-tokenizer = AutoTokenizer.from_pretrained("google/gemma-3-270m")
+config = Gemma3TextConfig.from_pretrained(model)
+config.use_bidirectional_attention = True
+config._attn_implementation = "flash_attention_2"
+
+base = Base.from_pretrained(model, config=config)
+pack = Packed.from_pretrained(model, config=config)
+tokenizer = AutoTokenizer.from_pretrained(model)
 
 phrases = [
     "Ceci est la première phrase, elle est courte.",
