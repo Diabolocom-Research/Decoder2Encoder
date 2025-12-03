@@ -108,7 +108,7 @@ class Gemma3Attention(nn.Module):
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
-        return attn_output, _
+        return attn_output
     
 
 def sdpa_attention_forward(
@@ -209,7 +209,7 @@ class Gemma3DecoderLayer(GradientCheckpointingLayer):
         else:
             position_embeddings = position_embeddings_global
 
-        hidden_states, _ = self.self_attn(
+        hidden_states = self.self_attn(
             hidden_states=hidden_states,
             position_embeddings=position_embeddings,
             attention_mask=attention_mask,
@@ -425,6 +425,7 @@ class Gemma3TextModel(Gemma3PreTrainedModel):
                 position_embeddings_global=position_embeddings_global,
                 position_embeddings_local=position_embeddings_local,
                 attention_mask=mask_mapping[decoder_layer.attention_type],
+                cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
                 window_size=window_size,
             )
