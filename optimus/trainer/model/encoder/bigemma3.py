@@ -253,7 +253,7 @@ class Gemma3TextScaledWordEmbedding(nn.Embedding):
         self.register_buffer("embed_scale", torch.tensor(embed_scale), persistent=False)
 
     def forward(self, input_ids: torch.Tensor):
-        return super().forward(input_ids) * self.embed_scale.to(self.weight.dtype)
+        return self.weight[input_ids, :] * self.embed_scale.to(self.weight.dtype)
 
 
 class Gemma3MLP(nn.Module):

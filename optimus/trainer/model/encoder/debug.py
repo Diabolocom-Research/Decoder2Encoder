@@ -5,14 +5,14 @@ from optimus.trainer.model.encoder.bigemma3 import Gemma3ForCausalLM as Packed
 from transformers import AutoTokenizer
 import torch
 
-model = "/lus/work/CT10/c1816236/nboizard/models/Gemma"
+model = "google/gemma-3-270m"
 
 config = Gemma3TextConfig.from_pretrained(model)
 config.use_bidirectional_attention = True
-config._attn_implementation = "flash_attention_2"
+# config._attn_implementation = "flash_attention_2"
 
-base = Base.from_pretrained(model, config=config)
-pack = Packed.from_pretrained(model, config=config)
+base = Base.from_pretrained(model, config=config).to("mps")
+pack = Packed.from_pretrained(model, config=config).to("mps")
 tokenizer = AutoTokenizer.from_pretrained(model)
 
 phrases = [
