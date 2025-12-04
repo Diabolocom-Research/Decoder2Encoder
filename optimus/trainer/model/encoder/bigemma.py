@@ -8,7 +8,7 @@ from transformers.activations import ACT2FN
 from transformers.generation import GenerationMixin
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import BaseModelOutputWithPast
-from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
 from transformers.modeling_utils import PreTrainedModel
 from transformers.models.gemma3.configuration_gemma3 import Gemma3Config, Gemma3TextConfig
 
@@ -310,6 +310,7 @@ class Gemma3RotaryEmbedding(nn.Module):
         self.original_inv_freq = self.inv_freq
 
     @torch.no_grad()
+    @dynamic_rope_update
     def forward(self, x, position_ids):
         inv_freq_expanded = self.inv_freq[:, None].float().to(x.device)
         position_ids_expanded = position_ids[None, :].float()

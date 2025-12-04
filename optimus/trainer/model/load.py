@@ -13,6 +13,7 @@ from optimus.trainer.configuration.configs import Config
 from optimus.trainer.model.encoder.bert import Bert, bert_config
 from optimus.trainer.model.encoder.eurobert import EuroBERT, eurobert_config
 from optimus.trainer.model.encoder.biqwen import Qwen3ForMaskedLM
+from optimus.trainer.model.encoder.bigemma import Gemma3ForCausalLM, Gemma3TextConfig
 from optimus.trainer.model.tools import ModelTools
 
 
@@ -98,10 +99,19 @@ def load_model(config: Config):
                 config.model, eurobert_config[config.model.model_size]
             )
             model = EuroBERT(dict_config_model)
-        elif "Qwen3" in config.model.model_name:
+        elif "qwen3" in config.model.model_name.lower():
             logging.set_verbosity_error()
             model = Qwen3ForMaskedLM.from_pretrained(
                 config.model.model_name,
+                attn_implementation="flash_attention_2" if config.model.attn_impl == "flash" else None,
+                fused_cross_entropy=config.model.fused_cross_entropy,
+            )
+            dict_config_model = asdict(config.model)
+        elif "gemma3" in config.model.model_name.lower():
+            logging.set_verbosity_error()
+            model = Gemma3ForCausalLM.from_pretrained(
+                config.model.model_name,
+                use_bidirectional_attention = True,
                 attn_implementation="flash_attention_2" if config.model.attn_impl == "flash" else None,
                 fused_cross_entropy=config.model.fused_cross_entropy,
             )
