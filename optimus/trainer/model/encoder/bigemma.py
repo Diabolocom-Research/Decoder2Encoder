@@ -458,6 +458,7 @@ class Gemma3ForCausalLM(Gemma3PreTrainedModel, GenerationMixin):
         cu_seqlens: Optional[torch.Tensor] = None,
         max_seqlen: Optional[int] = None,
         labels: Optional[torch.LongTensor] = None,
+        **kwargs
     ) -> tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
         hidden_states = self.model(
             input_ids=x,
@@ -483,7 +484,7 @@ class Gemma3ForCausalLM(Gemma3PreTrainedModel, GenerationMixin):
                     logits, labels, vocab_size=self.config.vocab_size
                 )
 
-        return loss, logits
+        return logits, loss
 
 
 

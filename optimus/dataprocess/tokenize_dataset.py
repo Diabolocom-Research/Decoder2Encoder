@@ -88,7 +88,7 @@ def encode_texts(
             return []
 
         if isinstance(texts[0], str):
-            result = tokenizer(texts, add_special_tokens=True)
+            result = tokenizer(texts, add_special_tokens=False)
             return result["input_ids"]
         else:
             result = tokenizer.apply_chat_template(
