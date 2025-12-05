@@ -29,7 +29,7 @@ class DistributedConfig:
     _mixed_precision: str = "bfloat16"
 
     @property
-    def mixed_precision(self) -> ShardingStrategy:
+    def mixed_precision(self) -> MixedPrecision:
         if self._mixed_precision == "float32":
             return MixedPrecision(
                 param_dtype=torch.float32,

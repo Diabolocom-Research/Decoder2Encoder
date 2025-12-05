@@ -47,7 +47,7 @@ class Data:
         if config.data.num_canonical_nodes <= 0:
             config.update_config(num_canonical_nodes=self.num_canonical_nodes)
 
-        self.train_streams = self._load_data_mix(rf"{self.data_config.data_mix_path}/train.json")
+        self.train_streams = self._load_data_mix(f"{self.data_config.data_mix_path}/train.json")
         self.train_dataset = self._create_dataset(self.train_streams)
         self.train_dataloader = self._create_dataloader(self.train_dataset)
         self.eval_dataloader = None

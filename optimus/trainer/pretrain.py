@@ -276,18 +276,15 @@ class Pretrain:
                     _, loss = self.model(input_ids, labels=labels, cache=self.cache)
             total_loss += loss.item()
 
-        # Convert to tensor for distributed reduction #TODO
         loss = total_loss / len(self.data.eval_dataloader)
         if self.train_config.fsdp or self.train_config.ddp:
-            dist.all_reduce(
-                torch.tensor(loss, device=self.model.device), 
-                op=dist.ReduceOp.AVG
-            )
+            loss = torch.tensor(loss, device=self.model.device)
+            dist.all_reduce(loss, op=dist.ReduceOp.AVG)
             loss = loss.item()
 
         if self.train_config.tensorboard and self.main_process:
-            self.writer.add_scalar("Loss/eval", loss.item(), self.step)
-            self.config.log_print(f"Validation loss: {loss.item()}")
+            self.writer.add_scalar("Loss/eval", loss, self.step)
+            self.config.log_print(f"Validation loss: {loss}")
         self.model.train()
 
     # ----------------------

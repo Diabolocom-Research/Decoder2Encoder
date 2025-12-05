@@ -70,15 +70,6 @@ class TrainConfig:
     log_every_n_steps: int = 10
 
     # Knowledge Distillation configurations
-# class KnowledgeDistillation(
-#     num_logprobs: int = 512,
-#     num_output_chunks: int = 8,
-#     kd_temperature: int = 1,
-#     teacher_temperature: float = 0,
-#     api_key: str = "EMPTY",
-#     base_url: str = "http://localhost:8000/v1"
-# )
-    
     knowledge_distillation: bool = False
     kd_num_logprobs: int = 512
     kd_num_output_chunks: int = 8

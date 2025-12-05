@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 @dataclass
 class DatasetConfig:
-    data_mix_path: str = "./exemples/mix"
+    data_mix_path: str = "./examples/mix"
     shuffle: bool = True
     batch_size: int = 12
     prefetch_factor: int = 1
