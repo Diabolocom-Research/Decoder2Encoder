@@ -14,7 +14,6 @@ class WarmupStableDecayLR(LRScheduler):
         epochs: int = -1,
         steps_per_epoch: int = -1,
         last_epoch: int = -1,
-        verbose: bool = False,
     ):
         """
         Scheduler with warmup, stable, and decay phases.
@@ -33,7 +32,6 @@ class WarmupStableDecayLR(LRScheduler):
             epochs (int): Total number of epochs for training. Must be provided if warmup_iters or decay_iters <= 1.
             steps_per_epoch (int): Number of steps per epoch. Must be provided if warmup_iters or decay_iters <= 1.
             last_epoch (int): The index of the last epoch. Default: -1.
-            verbose (bool): If True, prints a message to stdout for each update. Default: False.
 
         Raises:
             AssertionError: If epochs and steps_per_epoch are not provided when required.
@@ -76,7 +74,7 @@ class WarmupStableDecayLR(LRScheduler):
             self.final_lr = 0
         else:
             self.final_lr = max_lr / final_div_factor
-        super(WarmupStableDecayLR, self).__init__(optimizer, last_epoch, "deprecated")
+        super(WarmupStableDecayLR, self).__init__(optimizer, last_epoch)
 
     def get_lr(self):
         if self.last_epoch < self.warmup_iters:
