@@ -110,11 +110,11 @@ class Data:
         x = torch.cat([torch.as_tensor(seq, dtype=torch.long) for seq in input_seqs])
         y = torch.cat([torch.as_tensor(seq, dtype=torch.long) for seq in label_seqs])
 
-        parts = [torch.zeros(1, dtype=torch.long)]
+        parts = [torch.zeros(1, dtype=torch.int32)]
         offset = 0
         max_seqlen = 0
         for seq, cu_seq in zip(input_seqs, cu_seqlens):
-            parts.append(torch.as_tensor(cu_seq[1:], dtype=torch.long) + offset)
+            parts.append(torch.as_tensor(cu_seq[1:], dtype=torch.int32) + offset)
             offset += cu_seq[-1]
             max_seqlen = max(max_seqlen, len(seq))
 
