@@ -1,3 +1,5 @@
+"""Tokenize datasets using HuggingFace tokenizers with multiprocessing support."""
+
 import gc
 import importlib
 import itertools
@@ -5,17 +7,17 @@ import json
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional, Protocol, TypedDict
 
 import fire
 import numpy as np
-import tiktoken
-import tiktoken.load
 from dateutil import parser
 from streaming import MDSWriter
 from streaming.base.util import merge_index
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
+# Type definitions
 Metadata = dict[str, Any] | list[Any]
 
 
@@ -24,7 +26,7 @@ class Record(TypedDict):
     metadata: Metadata
 
 
-class TokRecord(TypedDict):
+class TokenizedRecord(TypedDict):
     tokens: list[int]
     metadata: Metadata
 
@@ -33,132 +35,122 @@ class GetRecordsFunc(Protocol):
     def __call__(self, file: str) -> Iterable[list[Record]]: ...
 
 
-class Llama3TiktokenTokenizer:
-    def __init__(self, path: str):
-        llama_3_special_tokens = _llama_special_tokens()
-        mergeable_ranks = tiktoken.load.load_tiktoken_bpe(path)
-
-        pat_str = r"""(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"""
-
-        self.encoding = tiktoken.Encoding(
-            name="llama3-tiktoken",
-            pat_str=pat_str,
-            mergeable_ranks=mergeable_ranks,
-            special_tokens=llama_3_special_tokens,
-        )
-        self._pat_str = pat_str
-        self._special_tokens = llama_3_special_tokens
-        self._len = len(mergeable_ranks) + len(llama_3_special_tokens)
-        self._eos_id = llama_3_special_tokens["<|end_of_text|>"]
-
-    @property
-    def eos_id(self) -> int:
-        return self._eos_id
-
-    @property
-    def pat_str(self) -> str:
-        return self._pat_str
-
-    @property
-    def special_tokens(self) -> dict[str, int]:
-        return self._special_tokens
-
-    @property
-    def vocab_size(self) -> int:
-        return self._len
+class TokenizationError(Exception):
+    pass
 
 
-def _llama_special_tokens():
-    # Special tokens for Llama models, with reserved placeholders for future use.
-    special_tokens = {
-        "<|begin_of_text|>": 128_000,
-        "<|end_of_text|>": 128_001,
-        "<|mask|>": 128_002,
-        "<|parallel_sep|>": 128_003,
-        "<|fim_suffix|>": 128_004,
-        "<|step_id|>": 128_005,
-        "<|start_header_id|>": 128_006,
-        "<|end_header_id|>": 128_007,
-        "<|eom_id|>": 128_008,
-        "<|eot_id|>": 128_009,
-    }
-    for i in range(245):
-        special_tokens[f"<|reserved_special_token_{i + 9}|>"] = 128_010 + i
-    special_tokens["<|python_tag|>"] = 128_255
-    return special_tokens
-
-
-def time_str_to_seconds(time_str: Optional[str]) -> Optional[int]:
+def parse_time_string(time_str: Optional[str]) -> Optional[int]:
     if time_str is None:
         return None
+
     try:
         time_obj = parser.parse(time_str)
-    except parser.ParserError:
-        raise ValueError("Time format must be HH:MM:SS")
+    except parser.ParserError as e:
+        raise ValueError(f"Invalid time format. Expected HH:MM:SS, got: {time_str}") from e
+
     return int(time_obj.hour * 3600 + time_obj.minute * 60 + time_obj.second)
 
 
-def futures_timeout(executor, futures, timeout: Optional[int]):
-    if timeout:
-        timeout = time_str_to_seconds(timeout)
-        start_time = time.time()
-        while not all(f.done() for f in futures):
-            if time.time() - start_time > timeout:
-                print("Timeout reached, canceling remaining tasks.")
-                executor.shutdown(wait=False, cancel_futures=True)
-                break
-            time.sleep(10)
+def monitor_futures_with_timeout(
+    executor: ProcessPoolExecutor,
+    futures: list,
+    timeout: Optional[str],
+) -> None:
+    if not timeout:
+        return
+
+    timeout_seconds = parse_time_string(timeout)
+    start_time = time.time()
+
+    while not all(f.done() for f in futures):
+        elapsed = time.time() - start_time
+        if elapsed > timeout_seconds:
+            print(f"Timeout reached after {elapsed:.1f}s, canceling remaining tasks.")
+            executor.shutdown(wait=False, cancel_futures=True)
+            break
+        time.sleep(10)
 
 
-def _worker(
-    input_subset,
-    tokenizer_path,
-    output_dir,
-    size_limit,
+def load_tokenizer(tokenizer_path: str) -> PreTrainedTokenizerBase:
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+        return tokenizer
+    except Exception as e:
+        raise TokenizationError(f"Failed to load tokenizer from '{tokenizer_path}': {e}") from e
+
+
+def encode_texts(
+    texts: list[str | list[dict]],
+    tokenizer: PreTrainedTokenizerBase,
+) -> list[list[int]]:
+    try:
+        if not texts:
+            return []
+
+        if isinstance(texts[0], str):
+            result = tokenizer(texts, add_special_tokens=True)
+            return result["input_ids"]
+        else:
+            result = tokenizer.apply_chat_template(
+                texts,
+                tokenize=True,
+                add_generation_prompt=False,
+            )
+            return result
+
+    except Exception as e:
+        raise TokenizationError(f"Failed to encode texts: {e}") from e
+
+
+def process_worker(
+    input_files: list[str],
+    tokenizer_path: str,
+    output_dir: str,
+    size_limit: int | str,
     get_records_fn: GetRecordsFunc,
     head: Optional[int] = None,
-    tiktoken: bool = False,
-):
-    tokenizer = (
-        Llama3TiktokenTokenizer(tokenizer_path)
-        if tiktoken
-        else AutoTokenizer.from_pretrained(tokenizer_path)
-    )
-    
-    def encode_fn(texts: list[str | list[dict]]) -> list[list[int]]:
-        if isinstance(texts[0], str):
-            if tiktoken:
-                input_ids = tokenizer.encoding.encode_ordinary_batch(texts, num_threads=16)
-            else:
-                input_ids = tokenizer(texts)["input_ids"]
-            return input_ids
-        else:
-            if not tiktoken:
-                input_ids = tokenizer.apply_chat_template(texts, tokenize=True)
-                return input_ids
-            else:
-                raise ValueError("Chat template encoding with tiktoken is not supported")
+) -> int:
+    """
+    Worker process to tokenize a subset of input files.
 
+    This function uses lazy evaluation and streaming to minimize memory usage:
+    - Uses map() instead of list comprehensions to avoid materializing large lists
+    - Uses itertools.chain to lazily flatten nested iterators
+    - Processes records one at a time through the pipeline
+    - Calls gc.collect() periodically to free memory
 
-    worker_id = output_dir.rstrip("/").split("/")[-1]
-    print(f"({worker_id}): Worker started.", flush=True)
+    Args:
+        input_files: List of input file paths to process
+        tokenizer_path: Path to tokenizer or model name
+        output_dir: Output directory for this worker
+        size_limit: Maximum size per output shard
+        get_records_fn: Function to extract records from files
+        head: Maximum number of batches to process (for testing)
 
-    data_per_file = map(get_records_fn, input_subset)
+    Returns:
+        Total number of tokens processed
+    """
+    worker_id = Path(output_dir).name
+    print(f"[{worker_id}] Worker started", flush=True)
+
+    tokenizer = load_tokenizer(tokenizer_path)
+
+    data_per_file = map(get_records_fn, input_files)
     batches = itertools.chain.from_iterable(data_per_file)
 
     if head is not None:
         batches = itertools.islice(batches, head)
 
-    def _tokenize(batches: list[Record]) -> Iterator[TokRecord]:
-        texts = [r["text"] for r in batches]
-        metadata = [r.get("metadata", {}) for r in batches]
-        tokens = encode_fn(texts)
-        return ({"tokens": t, "metadata": m} for t, m in zip(tokens, metadata))
+    def _tokenize(batch: list[Record]) -> Iterator[TokenizedRecord]:
+        texts = [r["text"] for r in batch]
+        metadata_list = [r.get("metadata", {}) for r in batch]
+        tokens_list = encode_texts(texts, tokenizer)
+        return ({"tokens": t, "metadata": m} for t, m in zip(tokens_list, metadata_list))
 
     tokenized_batches = map(_tokenize, batches)
     tokenized = itertools.chain.from_iterable(tokenized_batches)
 
-    def to_numpy(record: TokRecord) -> dict[str, Any]:
+    def to_numpy(record: TokenizedRecord) -> dict[str, Any]:
         record["tokens"] = np.array(record["tokens"], dtype=np.int32)
         return record
 
@@ -169,23 +161,26 @@ def _worker(
         "metadata": "json",
     }
 
-    start = time.time()
-    number_tokens = 0
-    with MDSWriter(out=output_dir, columns=columns, size_limit=size_limit) as out:
+    start_time = time.time()
+    total_tokens = 0
+
+    with MDSWriter(out=output_dir, columns=columns, size_limit=size_limit) as writer:
         for i, record in enumerate(tokenized, start=1):
             if record["tokens"].size:
-                number_tokens += record["tokens"].size
-                out.write(record)
+                total_tokens += record["tokens"].size
+                writer.write(record)
+
             if i % 10000 == 0:
-                elapsed = time.time() - start
-                records_per_second = i / max(int(elapsed), 1)
+                elapsed = time.time() - start_time
+                records_per_sec = i / max(int(elapsed), 1)
                 print(
-                    f"({worker_id}): Processed {i} records, {records_per_second:.2f} Records/s, {number_tokens} tokens.",
+                    f"[{worker_id}] Processed {i} records, "
+                    f"{records_per_sec:.2f} Records/s, {total_tokens} tokens.",
                     flush=True,
                 )
                 gc.collect()
 
-    return number_tokens
+    return total_tokens
 
 
 def tokenize_dataset(
@@ -196,26 +191,24 @@ def tokenize_dataset(
     size_limit: Optional[int | str] = "64MB",
     num_workers: int | str = 1,
     head: Optional[int] = None,
-    timeout: Optional[int] = None,
-    tiktoken: bool = False,
+    timeout: Optional[str] = None,
     read_files_kwargs: Optional[dict[str, Any]] = None,
-):
+) -> None:
     """
-    Tokenizes a dataset using the specified tokenizer and processes it in parallel.
+    Tokenize a dataset using HuggingFace tokenizers with parallel processing.
 
     Args:
-        input_dir (str): Path to the input directory containing data files.
-        tokenizer (str): Tokenizer name or path to be used.
-        dataset (str): Dataset module name.
-        output_dir (str, optional): Output directory for tokenized files. Defaults to "output".
-        size_limit (Optional[int | str], optional): Size limit per file. Defaults to "64MB".
-        num_workers (int | str, optional): Number of worker processes or "max". Defaults to 1.
-        head (Optional[int], optional): Number of initial samples to process. Defaults to None.
-        timeout (Optional[int], optional): Timeout for processing. Defaults to None.
-        tiktoken (bool, optional): Whether to use TikToken. Defaults to False.
-        read_files_kwargs (Optional[dict[str, Any]], optional): Additional arguments for file reading. Defaults to None.
+        input_dir: Path to directory containing input data files
+        tokenizer: HuggingFace tokenizer name or path
+        dataset: Dataset loader module name (must exist in optimus.dataprocess.dataset/)
+        output_dir: Output directory for tokenized data (must not exist)
+        size_limit: Maximum size per output shard (e.g., "64MB", "1GB")
+        num_workers: Number of parallel workers (or "max" for CPU count - 1)
+        head: Limit number of batches per worker (for testing)
+        timeout: Maximum runtime in HH:MM:SS format
+        read_files_kwargs: Additional arguments passed to dataset loader
     """
-    start = time.time()
+    start_time = time.time()
 
     file_dir = os.path.dirname(os.path.abspath(__file__))
     dataset_dir = os.path.join(file_dir, "dataset")
@@ -250,32 +243,34 @@ def tokenize_dataset(
         if num_workers > 1
         else [output_dir]
     )
-    for dir in output_dirs:
-        os.makedirs(dir, exist_ok=True)
+    for dir_path in output_dirs:
+        os.makedirs(dir_path, exist_ok=True)
 
-    input_subset = np.array_split(inputs, num_workers)
+    input_subsets = np.array_split(inputs, num_workers)
+
     with ProcessPoolExecutor(max_workers=num_workers) as executor:
         futures = [
             executor.submit(
-                _worker,
+                process_worker,
                 subset,
                 tokenizer,
                 output_dirs[i],
                 size_limit,
                 dataset_module.get_text,
                 head,
-                tiktoken,
             )
-            for i, subset in enumerate(input_subset)
+            for i, subset in enumerate(input_subsets)
         ]
+
         if timeout:
-            futures_timeout(executor, futures, timeout)
+            monitor_futures_with_timeout(executor, futures, timeout)
 
     total_tokens = sum(future.result() for future in futures if future.done())
+
     if num_workers > 1:
         merge_index(output_dir, keep_local=True)
 
-    end = time.time()
+    elapsed = time.time() - start_time
     metadata = {
         "tokenizer": tokenizer,
         "input_dir": input_dir,
@@ -283,7 +278,7 @@ def tokenize_dataset(
         "size_limit": size_limit,
         "num_workers": num_workers,
         "total_tokens": total_tokens,
-        "Runtime": time.strftime("%H:%M:%S", time.gmtime(end - start)),
+        "Runtime": time.strftime("%H:%M:%S", time.gmtime(elapsed)),
     }
     with open(os.path.join(output_dir, "metadata.json"), "w") as f:
         json.dump(metadata, f, indent=4)

@@ -16,7 +16,7 @@ The `tokenize_dataset.py` script tokenizes a dataset using a specified tokenizer
 ### Usage
 
 ```bash
-python tokenize_dataset.py --input_dir <path> --tokenizer <path_or_name> --dataset <name> [--output_dir <path>] [--size_limit <value>] [--num_workers <num>] [--head <num>] [--read_files_kwargs <json>] [--timeout <seconds>] [--tiktoken]
+python tokenize_dataset.py --input_dir <path> --tokenizer <path_or_name> --dataset <name> [--output_dir <path>] [--size_limit <value>] [--num_workers <num>] [--head <num>] [--read_files_kwargs <json>] [--timeout <seconds>]
 ```
 
 ### Parameters
@@ -30,7 +30,6 @@ python tokenize_dataset.py --input_dir <path> --tokenizer <path_or_name> --datas
 * `head` (*int*, optional): Number of batches to process. If not specified, processes the entire dataset.
 * `read_files_kwargs` (*dict[str, Any]*, optional): Additional parameters for dataset file reading. Defaults to `None`.
 * `timeout` (*int*, optional): Maximum time (in seconds) before termination. Defaults to `None` (no timeout).
-* `tiktoken` (*bool*, optional): Whether to use `tiktoken` for faster tokenization. Defaults to `False`.
 
 ### Example
 
@@ -40,41 +39,42 @@ python tokenize_dataset.py --input_dir ./codebagel --tokenizer "meta-llama/Llama
 
 This command tokenizes the `codeBagel` dataset stored in `./codebagel` using the `meta-llama/Llama-3.1-8B-Instruct` tokenizer, saves the output in `./output`, splits shards at 100MB, and runs with 4 workers.
 
-#### Fastest Tokenization with `tiktoken`
-
-For maximum efficiency (up to 2x speedup), use `tiktoken` with a compatible tokenizer and `tokenizer.model` [file](https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct/blob/main/original/tokenizer.model):
-
-```bash
-python tokenize_dataset.py --input_dir ./codebagel --tokenizer ./llama_tokenizer.model --dataset codeBagel --output_dir ./tokenized --size_limit 100mb --num_workers 4 --tiktoken
-```
-
 ---
 
 ## 2. Packing a Dataset (Optional)
 
-The `pack_dataset.py` script packs a dataset into blocks (sentences) of a fixed size or uniformly distributed sentence length.
+The `pack_dataset.py` script packs a tokenized dataset into fixed-size blocks using various packing algorithms.
 
 ### Usage
 
 ```bash
-python pack_dataset.py --local_dir <path> --output_dir <path> [--block_size <int>] [--val_size <int>] [--size_limit <int|str>] [--head <int>] [--num_workers <int>] [--random_size]
+python pack_dataset.py --input_dir <path> --output_dir <path> --block_size <int> [--packing_algorithm <algo>] [--sample_packing_group_size <int>] [--val_size <int>] [--size_limit <int|str>] [--head <int>] [--num_workers <int>] [--random_size] [--seed <int>]
 ```
 
 ### Parameters
 
-* `local_dir` (*str*): Local directory path containing the tokenized dataset.
+* `input_dir` (*str*): Path to tokenized dataset (can contain subdirectories).
 * `output_dir` (*str*): Directory to save the packed dataset.
-* `block_size` (*int*, optional): Block size for packing. Defaults to `None`.
-* `val_size` (*int*, optional): Validation set size. Defaults to `None`.
-* `size_limit` (*int | str*, optional): Size limit for the output files. Defaults to `"64MB"`.
-* `head` (*int*, optional): Number of records to process. Defaults to `None`.
-* `num_workers` (*int*, optional): Number of workers. Defaults to `1`.
-* `random_size` (*bool*, optional): If `True`, selects a random block size between `12` and `block_size`, resulting in a uniformly distributed sentence length. Defaults to `False`.
+* `block_size` (*int*): Target size for packed sequences (required).
+* `packing_algorithm` (*str*, optional): Packing algorithm to use. Options: `'greedy'`, `'first_fit_shuffle'`, `'first_fit_decreasing'`. Defaults to `'greedy'`.
+* `sample_packing_group_size` (*int*, optional): Number of shards to process before running packing optimization. Lower values use less memory but may be less efficient. `None` processes all shards together. Defaults to `5`.
+* `val_size` (*int*, optional): Total number of records for validation set (distributed across directories). Defaults to `None`.
+* `size_limit` (*int | str*, optional): Maximum shard size. Defaults to `"64MB"`.
+* `head` (*int*, optional): Optional limit on records to process per directory. Defaults to `None`.
+* `num_workers` (*int*, optional): Number of parallel workers for processing directories. Defaults to `1`.
+* `random_size` (*bool*, optional): If `True`, use random block sizes between `12` and `block_size` for greedy packing. Defaults to `False`.
+* `seed` (*int*, optional): Random seed for reproducibility. Defaults to `42`.
+
+### Packing Algorithms
+
+* **greedy**: Fast streaming concatenation. Sequences are concatenated in order until the block is full.
+* **first_fit_shuffle**: Optimized bin packing with shuffling. Better packing efficiency than greedy.
+* **first_fit_decreasing**: Optimized bin packing sorted by size. Best packing efficiency.
 
 ### Example
 
 ```bash
-python pack_dataset.py --local_dir './tokenized' --output_dir './output_pack' --block_size 2048 --random_size
+python pack_dataset.py --input_dir './tokenized' --output_dir './output_pack' --block_size 2048 --packing_algorithm first_fit_shuffle
 ```
 
 ---
@@ -109,17 +109,17 @@ The `inspect_dataset.py` script inspects a processed dataset by printing a few s
 ### Usage
 
 ```bash
-python inspect_dataset.py --local_dir <path> --tokenizer <path_or_name> [--num_samples <int>]
+python inspect_dataset.py --input_dir <path> --tokenizer <path_or_name> [--num_samples <int>]
 ```
 
 ### Parameters
 
-* `local_dir` (*str*): Dataset directory path.
-* `tokenizer_name` (*str*): Tokenizer name or path.
+* `input_dir` (*str*): Dataset directory path.
+* `tokenizer` (*str*): Tokenizer name or path.
 * `num_samples` (*int*, optional): Number of samples to print. Defaults to `5`.
 
 ### Example
 
 ```bash
-python inspect_dataset.py --local_dir './output' --tokenizer "meta-llama/Llama-3.1-8B-Instruct" --num_samples 5
+python inspect_dataset.py --input_dir './output' --tokenizer "meta-llama/Llama-3.1-8B-Instruct" --num_samples 5
 ```
