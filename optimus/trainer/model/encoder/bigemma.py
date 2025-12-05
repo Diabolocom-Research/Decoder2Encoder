@@ -82,6 +82,7 @@ class Gemma3Attention(nn.Module):
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
         if self.config._attn_implementation == "flash_attention_2" and FLASH_ATTN_AVAILABLE:
+            print(query_states.shape, key_states.shape, value_states.shape, cu_seqlens.shape)
             attn_output = flash_attn.flash_attn_varlen_func(
                 query_states.transpose(0, 1),
                 key_states.transpose(0, 1),
