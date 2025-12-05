@@ -403,10 +403,10 @@ class Gemma3TextModel(Gemma3PreTrainedModel):
         cu_seqlens: Optional[torch.Tensor] = None,
         max_seqlen: Optional[int] = None,
     ) -> BaseModelOutputWithPast:
+        print(cu_seqlens.dtype)
         hidden_states = self.embed_tokens(input_ids)
 
         position_ids = torch.arange(len(input_ids), device=hidden_states.device)
-
         position_embeddings_global = self.rotary_emb(hidden_states, position_ids)
         position_embeddings_local = self.rotary_emb_local(hidden_states, position_ids)
 
