@@ -53,11 +53,11 @@ class Pretrain:
             )
         ):
             os.makedirs(
-                rf"{self.train_config.output_dir}/{self.train_config.project_name}/tensorboard",
+                f"{self.train_config.output_dir}/{self.train_config.project_name}/tensorboard",
                 exist_ok=True,
             )
             self.writer = SummaryWriter(
-                rf"{self.train_config.output_dir}/{self.train_config.project_name}/tensorboard"
+                f"{self.train_config.output_dir}/{self.train_config.project_name}/tensorboard"
             )
 
         self.steps_per_epoch = int(
@@ -158,7 +158,7 @@ class Pretrain:
                     with autocast:
                         if self.config.model.huggingface_id:
                             loss = self.model(**batch)[0]
-                        if self.train_config.knowledge_distillation:
+                        elif self.train_config.knowledge_distillation:
                             # Asynchronously teacher forward pass and synchronous student forward pass
                             teacher_forward = self.KnowledgeDistillation.get_teacher_forward(
                                     batch.pop("prompts"), batch["labels"]
@@ -216,7 +216,7 @@ class Pretrain:
                             "Learning rate", self.scheduler.get_last_lr()[0], self.step
                         )
                         self.writer.add_scalar(
-                            "Time/step in seconde", end_time - start_time, self.step
+                            "Time/step in seconds", end_time - start_time, self.step
                         )
                         self.writer.add_scalar(
                             "Tokens seen", self.tokens_per_step * self.step, self.step
@@ -228,7 +228,7 @@ class Pretrain:
                         )
 
                     # Validation
-                    if self.train_config.run_validation & (
+                    if self.train_config.run_validation and (
                         self.step % self.train_config.validation_step == 0
                     ):
                         if self.data.eval_dataloader is not None:
@@ -259,11 +259,11 @@ class Pretrain:
         autocast = (
             torch.autocast(device_type="cuda", dtype=torch.bfloat16)
             if self.train_config.mixed_bfloat16 and not self.train_config.fsdp
-            else nullcontext
+            else nullcontext()
         )
         self.model.eval()
 
-        loss = 0
+        total_loss = 0
         for batch in self.data.eval_dataloader:
             input_ids = batch["input_ids"].to(device=self.model.device).contiguous()
             labels = batch["labels"].to(device=self.model.device).contiguous()
@@ -271,13 +271,14 @@ class Pretrain:
             with torch.no_grad():
                 with autocast:
                     _, loss = self.model(input_ids, labels=labels, cache=self.cache)
+            total_loss += loss.item()
 
-        loss /= len(self.data.eval_dataloader)
+        loss = total_loss / len(self.data.eval_dataloader)
         if self.train_config.fsdp or self.train_config.ddp:
             dist.all_reduce(loss, op=dist.ReduceOp.AVG)
         if self.train_config.tensorboard and self.main_process:
             self.writer.add_scalar("Loss/eval", loss, self.step)
-            print("Validation loss:", loss.item())
+            self.config.log_print(f"Validation loss: {loss.item()}")
         self.model.train()
 
     # ----------------------
@@ -288,7 +289,7 @@ class Pretrain:
         """
         Save the model, optimizer, scheduler, dataloader state dicts and config.
         """
-        path = rf"{self.train_config.output_dir}/{self.train_config.project_name}/checkpoints/{self.step}/"
+        path = f"{self.train_config.output_dir}/{self.train_config.project_name}/checkpoints/{self.step}/"
         os.makedirs(path, exist_ok=True)
         self.config.log_print(f"Saving checkpoint at steps: {self.step}.")
         self.config.log_print(f"Saving checkpoint at path: {path}")
@@ -395,7 +396,7 @@ class Pretrain:
         # Tensorboard reloading
         if self.config.train.skip_reload_tensorboard:
             self.config.log_print("Skipping reloading the tensorboard.")
-            self.config.train.skip_reload_scheduler = False
+            self.config.train.skip_reload_tensorboard = False
         elif self.train_config.tensorboard and self.main_process:
             self.writer = SummaryWriter(log_dir=tensorboard_path, purge_step=self.step)
             self.config.log_print("Tensorboard reloaded.")
@@ -503,7 +504,7 @@ class Pretrain:
     @contextlib.contextmanager
     def profiler(self) -> Generator[Optional[torch.profiler.profile], None, None]:
         profile_dir = (
-            rf"{self.train_config.output_dir}/{self.train_config.project_name}/profiler"
+            f"{self.train_config.output_dir}/{self.train_config.project_name}/profiler"
         )
         os.makedirs(profile_dir, exist_ok=True)
 

@@ -15,14 +15,9 @@ class Data:
     """Manages dataset loading, dataloader creation, and state management."""
 
     def __init__(self, config: Config, tokenizer):
-        """
-        Initialize the Data object with configurations and tokenizer. Load data mix and create datasets and dataloaders.
-        Args:
-            config (Config): Configuration object containing all the necessary configurations.
-            tokenizer: Tokenizer object to be used for tokenizing the data.
-        """
         self.data_config = config.data
         self.system_config = config.system
+        self.train_config = config.train
         self.main_process = config.is_main_process
         self.mntp_objective = config.train.mntp_objective
         self.knowledge_distillation = config.train.knowledge_distillation
@@ -35,6 +30,7 @@ class Data:
             + config.train.original_probability
             == 1.0
         ), "The sum of masking probabilities must be equal to 1.0."
+
         self.num_canonical_nodes = (
             config.system.num_nodes
             if config.data.num_canonical_nodes <= 0
@@ -51,59 +47,32 @@ class Data:
         if config.data.num_canonical_nodes <= 0:
             config.update_config(num_canonical_nodes=self.num_canonical_nodes)
 
-        # Load data mix for training & evaluation
-        self.train_streams = self.__load_data_mix(
-            rf"{self.data_config.data_mix_path}/train.json"
-        )
-
-        # Create datasets
-        self.train_dataset = self.__create_dataset(self.train_streams)
-        # self.eval_dataset = self.__create_dataset(self.eval_streams, eval=True) if self.eval_streams else None
-        config.log_print("Train dataset created successfully:", len(self.train_dataset))
-
-        # Create dataloaders
-        self.train_dataloader = self.__create_dataloader(self.train_dataset)
-        # self.eval_dataloader = self.__create_dataloader(self.eval_dataset) if self.eval_dataset else None
+        self.train_streams = self._load_data_mix(rf"{self.data_config.data_mix_path}/train.json")
+        self.train_dataset = self._create_dataset(self.train_streams)
+        self.train_dataloader = self._create_dataloader(self.train_dataset)
         self.eval_dataloader = None
-        config.log_print(
-            "Train dataloader created successfully:", len(self.train_dataloader)
-        )
 
-        config.log_print(
-            f"Masking probabilities: MLM={config.train.mlm_probability}, Mask={config.train.mask_probability}, Random={config.train.random_probability}, Original={config.train.original_probability}"
-        )
         config.log_print(f"Number of canonical nodes: {self.num_canonical_nodes}")
+        config.log_print("Train dataset created successfully:", len(self.train_dataset))
+        config.log_print("Train dataloader created successfully:", len(self.train_dataloader))
+        config.log_print(
+            f"Masking probabilities: MLM={config.train.mlm_probability}, "
+            f"Mask={config.train.mask_probability}, Random={config.train.random_probability}, "
+            f"Original={config.train.original_probability}"
+        )
 
-    def __load_data_mix(self, path: str) -> list[Stream]:
-        """
-        Load data mix from the provided path.
-        Args:
-            path (str): Path to the data mix file.
-        Returns:
-            list[Stream]: List of Stream objects containing the data mix.
-        """
-        with open(path, "r") as file:
-            streams_data = json.load(file)
-            return [Stream(**item) for item in streams_data]
+    def _load_data_mix(self, path: str) -> list[Stream]:
+        with open(path, "r") as f:
+            return [Stream(**item) for item in json.load(f)]
 
-    def __create_dataset(
-        self, streams: list[Stream], eval: bool = False
-    ) -> StreamingDataset:
-        """
-        Create a dataset from the provided streams.
-        Args:
-            streams (list[Stream]): List of Stream objects containing the data
-            eval (bool): Flag to determine if the dataset is for evaluation.
-        Returns:
-            Dataset: Dataset object containing the data.
-        """
+    def _create_dataset(self, streams: list[Stream], eval: bool = False) -> StreamingDataset:
         return MaskingDataset(
             streams=streams,
-            shuffle=False if eval else self.data_config.shuffle,
+            shuffle=not eval and self.data_config.shuffle,
             shuffle_seed=9176 if eval else self.data_config.seed,
             batch_size=self.data_config.batch_size,
             num_canonical_nodes=self.num_canonical_nodes,
-            shuffle_block_size=int(max(4000000 // self.num_canonical_nodes, 1 << 18)),
+            shuffle_block_size=int(max(4_000_000 // self.num_canonical_nodes, 1 << 18)),
             predownload=self.data_config.predownload * self.data_config.batch_size,
             mlm_probability=self.mlm_probability,
             mask_probability=self.mask_probability,
@@ -115,24 +84,19 @@ class Data:
             knowledge_distillation=self.knowledge_distillation,
         )
 
-    def __create_dataloader(self, dataset: StreamingDataset) -> StreamingDataLoader:
-        """
-        Create a dataloader from the provided streams.
-        Args:
-            streams (list[Stream]): List of Stream objects containing the data mix.
-        Returns:
-            DataLoader: DataLoader object containing the data mix.
-        """
+    def _create_dataloader(self, dataset: StreamingDataset) -> StreamingDataLoader:
+        collate_fn = (
+            self.to_torch_collate_HF_pad_fn if self.hf_model
+            else self.to_torch_collate_var_len_fn_with_KD if self.knowledge_distillation
+            else self.to_torch_collate_var_len_fn
+        )
+
         dataloader = StreamingDataLoader(
             dataset,
             batch_size=self.data_config.batch_size,
             num_workers=self.data_config.num_workers,
             prefetch_factor=self.data_config.prefetch_factor or None,
-            collate_fn=(
-                self.to_torch_collate_HF_pad_fn if self.hf_model
-                else self.to_torch_collate_var_len_fn_with_KD if self.knowledge_distillation
-                else self.to_torch_collate_var_len_fn
-            ),
+            collate_fn=collate_fn,
             pin_memory=self.data_config.pin_memory,
             drop_last=True,
         )
@@ -141,15 +105,6 @@ class Data:
         return dataloader
 
     def to_torch_collate_var_len_fn(self, batch):
-        """
-        Collate function for the dataloader. Prepares the batch for training with variable-length samples.
-
-        Args:
-            batch (list): List of tuples (input_seq, label_seq, cu_seqlen).
-
-        Returns:
-            dict[str, torch.Tensor]: Dictionary containing input_ids, labels, cu_seqlens, and max_seqlen.
-        """
         input_seqs, label_seqs, cu_seqlens = zip(*batch)
 
         x = torch.cat([torch.as_tensor(seq, dtype=torch.long) for seq in input_seqs])
@@ -162,51 +117,34 @@ class Data:
             parts.append(torch.as_tensor(cu_seq[1:], dtype=torch.long) + offset)
             offset += cu_seq[-1]
             max_seqlen = max(max_seqlen, len(seq))
-        cu_seqlens_tensor = torch.cat(parts)
 
         return {
             "x": x,
             "labels": y,
-            "cu_seqlens": cu_seqlens_tensor,
+            "cu_seqlens": torch.cat(parts),
             "max_seqlen": max_seqlen,
         }
-    
+
     def to_torch_collate_var_len_fn_with_KD(self, batch):
-        output = {}
-        output["prompts"] = [item.pop() for item in batch]
-        output.update(self.to_torch_collate_var_len_fn(batch))
-        return output
+        prompts = [item.pop() for item in batch]
+        result = self.to_torch_collate_var_len_fn(batch)
+        result["prompts"] = prompts
+        return result
 
     def to_torch_collate_HF_pad_fn(self, batch):
-        """
-        Collate function for the dataloader (used by HuggingFace). Prepares the batch with padding and attention masks.
-
-        Args:
-            batch: List of tuples (input_seq, label_seq), where each seq is a list of token IDs.
-
-        Returns:
-            dict[str, torch.Tensor]: Dictionary with input_ids, labels, attention_mask.
-        """
         input_seqs, label_seqs = zip(*batch)
 
         input_tensors = [torch.tensor(seq, dtype=torch.long) for seq in input_seqs]
         label_tensors = [torch.tensor(seq, dtype=torch.long) for seq in label_seqs]
 
         padded_inputs = pad_sequence(input_tensors, batch_first=True, padding_value=0)
-        padded_labels = pad_sequence(
-            label_tensors, batch_first=True, padding_value=-100
-        )
-        attention_mask = (padded_inputs != 0).long()
+        padded_labels = pad_sequence(label_tensors, batch_first=True, padding_value=-100)
 
         return {
             "input_ids": padded_inputs,
-            "attention_mask": attention_mask,
+            "attention_mask": (padded_inputs != 0).long(),
             "labels": padded_labels,
         }
-
-    # ----------------------
-    # Masking Dataset
-    # ----------------------
 
 
 class MaskingDataset(StreamingDataset):
@@ -231,157 +169,100 @@ class MaskingDataset(StreamingDataset):
         self.add_bos_token = add_bos_token
         self.add_eos_token = add_eos_token
         self.knowledge_distillation = knowledge_distillation
-        super(MaskingDataset, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
     def __getitem__(self, index):
         item = super().__getitem__(index)
 
-        inputs, cu_seqlens = self.__online_token_addition(
-            item["tokens"], item["cu_seqlens"]
-        )
-        inputs, labels = self.__masking_function(inputs, cu_seqlens)
+        inputs, cu_seqlens = self._add_special_tokens(item["tokens"], item.get("cu_seqlens"))
+        inputs, labels = self._apply_masking(inputs, cu_seqlens)
 
-        return (
-            [inputs, labels, cu_seqlens, item["tokens"]] if self.knowledge_distillation
-            else [inputs, labels, cu_seqlens] if cu_seqlens is not None
-            else [inputs, labels]
-        )
+        if self.knowledge_distillation:
+            return [inputs, labels, cu_seqlens, item["tokens"]]
+        elif cu_seqlens is not None:
+            return [inputs, labels, cu_seqlens]
+        else:
+            return [inputs, labels]
 
-    def __online_token_addition(self, item: Any, cu_seqlens: Any = None) -> Any:
-        """
-        Add special tokens (BOS or EOS) to the input sequences online during data loading.
-        Args:
-            Item: Item data to which special tokens will be added.
-        Returns:
-            Item: Item data with special tokens added.
-        """
+    def _add_special_tokens(self, tokens: NDArray, cu_seqlens: NDArray | None = None):
         if self.add_bos_token:
-            if cu_seqlens is not None:
-                num_seqs = len(cu_seqlens) - 1
-                total_len = len(item) + num_seqs
-                insert_pos = cu_seqlens[:-1] + np.arange(num_seqs)
-
-                new_inputs = np.empty(total_len, dtype=item.dtype)
-                new_inputs[insert_pos] = self.tokenizer.bos_token_id
-                mask = np.ones(total_len, dtype=bool)
-                mask[insert_pos] = False
-                new_inputs[mask] = item
-
-                item = new_inputs
-                cu_seqlens = cu_seqlens + np.arange(len(cu_seqlens))
-            else:
-                item = np.concatenate(([self.tokenizer.bos_token_id], item))
-
+            tokens, cu_seqlens = self._insert_token(tokens, cu_seqlens, self.tokenizer.bos_token_id, at_start=True)
         if self.add_eos_token:
-            if cu_seqlens is not None:
-                num_seqs = len(cu_seqlens) - 1
-                total_len = len(item) + num_seqs
-                insert_pos = cu_seqlens[1:] + np.arange(num_seqs)
+            tokens, cu_seqlens = self._insert_token(tokens, cu_seqlens, self.tokenizer.eos_token_id, at_start=False)
+        return tokens, cu_seqlens
 
-                new_inputs = np.empty(total_len, dtype=item.dtype)
-                new_inputs[insert_pos] = self.tokenizer.eos_token_id
-                mask = np.ones(total_len, dtype=bool)
-                mask[insert_pos] = False
-                new_inputs[mask] = item
+    def _insert_token(self, tokens: NDArray, cu_seqlens: NDArray | None, token_id: int, at_start: bool):
+        if cu_seqlens is not None:
+            num_seqs = len(cu_seqlens) - 1
+            total_len = len(tokens) + num_seqs
+            insert_pos = (cu_seqlens[:-1] if at_start else cu_seqlens[1:]) + np.arange(num_seqs)
 
-                item = new_inputs
-                cu_seqlens = cu_seqlens + np.arange(len(cu_seqlens))
-            else:
-                item = np.concatenate((item, [self.tokenizer.eos_token_id]))
+            new_tokens = np.empty(total_len, dtype=tokens.dtype)
+            new_tokens[insert_pos] = token_id
+            mask = np.ones(total_len, dtype=bool)
+            mask[insert_pos] = False
+            new_tokens[mask] = tokens
 
-        return item, cu_seqlens
+            return new_tokens, cu_seqlens + np.arange(len(cu_seqlens))
+        else:
+            return (
+                np.concatenate(([token_id], tokens)) if at_start
+                else np.concatenate((tokens, [token_id]))
+            ), None
 
-    def __masking_function(self, item: Any, cu_seqlens: Any = None) -> dict[str, Any]:
-        """
-        Prepare masked token inputs and labels for masked language modeling.
+    def _apply_masking(self, tokens: NDArray, cu_seqlens: NDArray | None = None):
+        inputs = np.copy(tokens)
+        labels = np.copy(tokens)
 
-        This function is inspired by the Huggingface DataCollatorForLanguageModeling.
-        The original function can be found at this URL: https://github.com/huggingface/transformers/blob/main/src/transformers/data/data_collator.py
-
-        Args:
-            inputs: Input data to be masked.
-
-        Returns:
-            inputs: A list containing the input_ids with masked tokens.
-            labels: A list containing the original token for masked tokens, and -100 otherwise.
-        """
-        # Clone inputs to create labels
-        inputs = np.copy(item)
-        labels = np.copy(item)
-
-        # We sample a few tokens in each sequence for MLM training.
         probability_matrix = np.full(labels.shape, self.mlm_probability)
-
         special_tokens_mask = np.array(
-            self.tokenizer.get_special_tokens_mask(
-                labels, already_has_special_tokens=True
-            ),
+            self.tokenizer.get_special_tokens_mask(labels, already_has_special_tokens=True),
             dtype=bool,
         )
         probability_matrix[special_tokens_mask] = 0.0
 
         masked_indices = np.random.rand(*probability_matrix.shape) < probability_matrix
-        labels[~masked_indices] = -100  # We only compute loss on masked tokens.
+        labels[~masked_indices] = -100
 
-        # mask_probability of the time, we replace masked input tokens with mask_token ([MASK])
-        indices_replaced = (
-            np.random.rand(*labels.shape) < self.mask_probability
-        ) & masked_indices
-        inputs[indices_replaced] = self.tokenizer.convert_tokens_to_ids(
-            self.tokenizer.mask_token
-        )
+        indices_replaced = (np.random.rand(*labels.shape) < self.mask_probability) & masked_indices
+        inputs[indices_replaced] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.mask_token)
 
-        # random_probability of the time, we replace masked input tokens with random word
         indices_random = (
             (np.random.rand(*labels.shape) < self.random_probability)
             & masked_indices
             & ~indices_replaced
         )
-        random_words = np.random.randint(0, len(self.tokenizer), size=labels.shape)
-        inputs[indices_random] = random_words[indices_random]
+        inputs[indices_random] = np.random.randint(0, len(self.tokenizer), size=labels.shape)[indices_random]
 
-        # Align inputs and labels for MTNP objective
         if self.mntp_objective:
-            if cu_seqlens is not None:
-                num_seqs = len(cu_seqlens) - 1
-
-                mask = np.ones(len(inputs), dtype=bool)
-                mask[cu_seqlens[1:] - 1] = False
-                inputs = inputs[mask]
-
-                label_mask = np.ones(len(labels), dtype=bool)
-                label_mask[cu_seqlens[:-1]] = False
-                labels = labels[label_mask]
-
-                cu_seqlens = cu_seqlens - np.arange(num_seqs + 1)
-            else:
-                inputs = inputs[:-1]
-                labels = labels[1:]
+            inputs, labels, cu_seqlens = self._apply_mntp_shift(inputs, labels, cu_seqlens)
 
         return inputs, labels
 
+    @staticmethod
+    def _apply_mntp_shift(inputs: NDArray, labels: NDArray, cu_seqlens: NDArray | None):
+        if cu_seqlens is not None:
+            num_seqs = len(cu_seqlens) - 1
 
-# -------------------------
-# Patch Streaming functions
-# -------------------------
+            input_mask = np.ones(len(inputs), dtype=bool)
+            input_mask[cu_seqlens[1:] - 1] = False
+            inputs = inputs[input_mask]
+
+            label_mask = np.ones(len(labels), dtype=bool)
+            label_mask[cu_seqlens[:-1]] = False
+            labels = labels[label_mask]
+
+            return inputs, labels, cu_seqlens - np.arange(num_seqs + 1)
+        else:
+            return inputs[:-1], labels[1:], None
 
 
 def _get_batch_size(self, batch: Any) -> int:
-    """Get the number of samples in a batch.
-
-    Args:
-        _ (Any): _.
-
-    Returns:
-        int: Number of samples.
-    """
     return self.batch_size
 
 
 def patch_spanner():
-    """Patches the Spanner class to use the new implementation of the SpannerPatch class."""
     from streaming.base import spanner
-
     spanner.Spanner.__init__ = SpannerPatch.__init__
     spanner.Spanner.__getitem__ = SpannerPatch.__getitem__
 
@@ -390,24 +271,14 @@ class SpannerPatch:
     """Patches the large memory allocation in the original Spanner initialization.
 
     This implementation was taken from: https://github.com/mosaicml/streaming/pull/773
-
-    Below is the original docstring.
-
-    Given a list of shards, construct a mapping of global index to shard and relative index.
-    Args:
-        shard_sizes (NDArray[np.int64]): Number of samples in each shard.
-        span_size (int): Size of the divisions of the sample space. Defaults to ``1 << 10``.
     """
 
-    def __init__(
-        self, shard_sizes: NDArray[np.int64], span_size: int = 1 << 10
-    ) -> None:
+    def __init__(self, shard_sizes: NDArray[np.int64], span_size: int = 1 << 10) -> None:
         self.shard_sizes = shard_sizes
         self.span_size = span_size
         self.num_samples = sum(shard_sizes)
-        self.shard_bounds = np.concatenate(
-            [np.zeros(1, np.int64), shard_sizes.cumsum()]
-        )
+        self.shard_bounds = np.concatenate([np.zeros(1, np.int64), shard_sizes.cumsum()])
+
         overflow = self.num_samples % span_size
         underflow = span_size - overflow if overflow else 0
         self.shard_sizes[-1] += underflow
@@ -422,12 +293,10 @@ class SpannerPatch:
         while current_shard < n_shards:
             span_min_shard = current_shard
             span_max_shard = current_shard
-
             remaining_span_size = span_size
+
             while remaining_span_size > 0 and current_shard < n_shards:
-                available_in_current_shard = (
-                    shard_sizes[current_shard] - current_position_in_shard
-                )
+                available_in_current_shard = shard_sizes[current_shard] - current_position_in_shard
 
                 if remaining_span_size >= available_in_current_shard:
                     remaining_span_size -= available_in_current_shard
@@ -443,27 +312,18 @@ class SpannerPatch:
             span_lowest_shards.append(span_min_shard)
             span_highest_shards.append(span_max_shard)
 
-        self.spans = []
-        for low, high in zip(span_lowest_shards, span_highest_shards):
-            shards = np.arange(low, high + 1)
-            self.spans.append(shards)
+        self.spans = [np.arange(low, high + 1) for low, high in zip(span_lowest_shards, span_highest_shards)]
         self.shard_sizes[-1] -= underflow
 
     def __getitem__(self, index: int) -> tuple[int, int]:
-        """Map global sample index to shard and relative sample index.
-        Args:
-            index (int): Global sample index.
-        Returns:
-            Tuple[int, int]: Shard and relative sample index.
-        """
         if not (0 <= index < self.num_samples):
-            raise IndexError(
-                f"Invalid sample index `{index}`: 0 <= {index} < {self.num_samples}"
-            )
+            raise IndexError(f"Invalid sample index `{index}`: 0 <= {index} < {self.num_samples}")
+
         span = index // self.span_size
         for shard in self.spans[span]:
             shard_start = self.shard_bounds[shard]
             shard_stop = self.shard_bounds[shard + 1]
             if shard_start <= index < shard_stop:
                 return shard, int(index - shard_start.item())  # pyright: ignore
+
         raise RuntimeError("Internal error: shards were indexed incorrectly")

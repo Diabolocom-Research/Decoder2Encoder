@@ -7,10 +7,7 @@ import torch.distributed.checkpoint as dcp
 import torch.distributed.checkpoint.state_dict as dcp_sd
 from torch.distributed.fsdp import (
     BackwardPrefetch,
-    FullStateDictConfig,
     FullyShardedDataParallel,
-    LocalStateDictConfig,
-    StateDictType,
 )
 
 from optimus.trainer.configuration.configs import Config

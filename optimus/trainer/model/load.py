@@ -13,7 +13,7 @@ from optimus.trainer.configuration.configs import Config
 from optimus.trainer.model.encoder.bert import Bert, bert_config
 from optimus.trainer.model.encoder.eurobert import EuroBERT, eurobert_config
 from optimus.trainer.model.encoder.biqwen import Qwen3ForMaskedLM
-from optimus.trainer.model.encoder.bigemma import Gemma3ForCausalLM, Gemma3TextConfig
+from optimus.trainer.model.encoder.bigemma import Gemma3ForCausalLM
 from optimus.trainer.model.tools import ModelTools
 
 
