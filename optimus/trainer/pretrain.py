@@ -151,7 +151,8 @@ class Pretrain:
                 # No sync context manager for gradient accumulation
                 no_sync = (
                     self.model.no_sync()
-                    if i % self.config.train.gradient_accumulation_steps != 0
+                    if i % self.config.train.gradient_accumulation_steps != 0 and
+                    i != len(self.data.train_dataloader)
                     else nullcontext()
                 )
 
