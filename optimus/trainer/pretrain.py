@@ -76,7 +76,7 @@ class Pretrain:
         )
 
         self.scheduler = self.get_scheduler(self.train_config.lr_scheduler)
-        self.step = 1
+        self.step = 0
 
         # Knowledge Distillation setup
         if self.train_config.knowledge_distillation:
@@ -196,6 +196,7 @@ class Pretrain:
                     self.optimizer.step()
                     self.optimizer.zero_grad()
                     self.scheduler.step()
+                    self.step += 1
 
                     end_time = time.time()
                     if self.main_process:
@@ -243,7 +244,7 @@ class Pretrain:
                     ):
                         self.save()
                         self.config.log_print(
-                            f"Remaining steps: {(self.steps_per_epoch * self.train_config.num_epochs) - self.step}"
+                            f"Remaining steps: {(self.steps_per_epoch * self.train_config.num_epochs) - (self.step-1)}"
                         )
 
                     # Profiling
@@ -252,7 +253,6 @@ class Pretrain:
                         if prof.step_num == 20 and self.train_config.exit_end_profiling:
                             break
 
-                    self.step += 1
                     start_time = end_time
                     total_loss = 0
 
