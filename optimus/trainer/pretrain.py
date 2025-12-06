@@ -244,7 +244,7 @@ class Pretrain:
                     ):
                         self.save()
                         self.config.log_print(
-                            f"Remaining steps: {(self.steps_per_epoch * self.train_config.num_epochs) - (self.step-1)}"
+                            f"Remaining steps: {(self.steps_per_epoch * self.train_config.num_epochs) - (self.step)}"
                         )
 
                     # Profiling
