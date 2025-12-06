@@ -76,7 +76,7 @@ class Pretrain:
         )
 
         self.scheduler = self.get_scheduler(self.train_config.lr_scheduler)
-        self.step = 0
+        self.step = 1
 
         # Knowledge Distillation setup
         if self.train_config.knowledge_distillation:
@@ -196,7 +196,6 @@ class Pretrain:
                     self.optimizer.step()
                     self.optimizer.zero_grad()
                     self.scheduler.step()
-                    self.step += 1
 
                     end_time = time.time()
                     if self.main_process:
@@ -253,6 +252,7 @@ class Pretrain:
                         if prof.step_num == 20 and self.train_config.exit_end_profiling:
                             break
 
+                    self.step += 1
                     start_time = end_time
                     total_loss = 0
 
