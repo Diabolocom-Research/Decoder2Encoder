@@ -2,7 +2,7 @@ import argparse
 import shutil
 import os
 import torch
-from modeling_biqwen_local import BiQwen3ForMaskedLM
+from modeling_bigemma_local import BiGemma3ForMaskedLM
 from configuration_biqwen import BiQwen3Config
 from huggingface_hub import create_branch, HfApi
 from huggingface_hub.utils import RepositoryNotFoundError
@@ -31,7 +31,7 @@ def main():
     # Load config and model
     print(f"Loading config for model size: {args.model_size}")
     config = BiQwen3Config.from_pretrained(f'{args.model_size}.json')
-    model = BiQwen3ForMaskedLM(config)
+    model = BiGemma3ForMaskedLM(config)
 
     # Load checkpoint weights
     print(f"Loading state_dict from: {args.weight_path}/model.pt")
@@ -72,7 +72,6 @@ def main():
 
     # Build the command to run
     command = (
-        # f'source /lus/work/CT10/c1816236/nboizard/venv_dec2enc/bin/activate && '
         f'huggingface-cli upload-large-folder '
         f'"{args.organization}/{args.model_name}" '
         f'--repo-type=model '
