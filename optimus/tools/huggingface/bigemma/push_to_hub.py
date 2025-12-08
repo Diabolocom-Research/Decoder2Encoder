@@ -3,7 +3,7 @@ import shutil
 import os
 import torch
 from modeling_bigemma_local import BiGemma3ForMaskedLM
-from configuration_biqwen import BiQwen3Config
+from configuration_bigemma import BiGemma3TextConfig
 from huggingface_hub import create_branch, HfApi
 from huggingface_hub.utils import RepositoryNotFoundError
 
@@ -30,7 +30,7 @@ def main():
 
     # Load config and model
     print(f"Loading config for model size: {args.model_size}")
-    config = BiQwen3Config.from_pretrained(f'{args.model_size}.json')
+    config = BiGemma3TextConfig.from_pretrained(f'{args.model_size}.json')
     model = BiGemma3ForMaskedLM(config)
 
     # Load checkpoint weights
