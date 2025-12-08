@@ -4,7 +4,7 @@ import os
 import torch
 from modeling_biqwen_local import BiQwen3ForMaskedLM
 from configuration_biqwen import BiQwen3Config
-from huggingface_hub import create_branch, HfApi, Repository
+from huggingface_hub import create_branch, HfApi
 from huggingface_hub.utils import RepositoryNotFoundError
 
 

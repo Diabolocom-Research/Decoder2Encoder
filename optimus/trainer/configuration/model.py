@@ -16,7 +16,7 @@ class ModelConfig:
     model_size: str | None = "210m"
 
     # If parameters are not provided, default values of the model size are used.
-    vocab_size: int | None = 128256  # Vocabulary size
+    vocab_size: int | None = None  # Vocabulary size
     embedding_size: int | None = None  # Embedding size
     num_head: int | None = None  # Number of heads
     num_kv_head: int | None = None  # Number of key-value heads
