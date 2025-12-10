@@ -38,6 +38,7 @@ def main():
     state_dict_path = os.path.join(args.weight_path, "model.pt")
     state_dict = torch.load(state_dict_path, map_location="cpu")
     model.load_state_dict(state_dict)
+    model.config.use_bidirectional_attention = True
     model.save_pretrained("./tmp")
 
     # Copy python source files to tmp for completeness

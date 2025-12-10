@@ -1,6 +1,6 @@
 {
   "add_bos_token": true,
-  "add_eos_token": false,
+  "add_eos_token": true,
   "added_tokens_decoder": {
     "0": {
       "content": "<pad>",
@@ -51334,6 +51334,7 @@
     "image_token": "<image_soft_token>"
   },
   "image_token": "<image_soft_token>",
+  "mask_token": "<|mask|>",
   "model_max_length": 1000000000000000019884624838656,
   "pad_token": "<pad>",
   "padding_side": "right",

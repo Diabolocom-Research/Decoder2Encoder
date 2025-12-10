@@ -228,7 +228,7 @@ class BiGemma3TextConfig(PretrainedConfig):
         self.use_bidirectional_attention = use_bidirectional_attention
         self.classifier_pooling = classifier_pooling
         if use_bidirectional_attention:
-            self.sliding_window = (self.sliding_window // 2) + 1  # due to fa we set exclusive bounds
+            self.sliding_window = self.sliding_window // 2
 
         self.rope_local_base_freq = rope_local_base_freq
         self.rope_scaling = rope_scaling

@@ -225,17 +225,16 @@ def create_packed_seqs_mask(
     """
     total_len = cu_seqlens[-1]
     seq_lengths = (cu_seqlens[1:] - cu_seqlens[:-1]).to(device)
-
+    
     seq_ids = torch.repeat_interleave(
-        torch.arange(len(seq_lengths), device=device), seq_lengths
+        torch.arange(len(seq_lengths), device=device),
+        seq_lengths
     )
-
+    
     mask = seq_ids.unsqueeze(0) == seq_ids.unsqueeze(1)
 
     if causal:
-        mask &= torch.tril(
-            torch.ones(total_len, total_len, device=device, dtype=torch.bool)
-        )
+        mask &= torch.tril(torch.ones(total_len, total_len, device=device, dtype=torch.bool))
 
     if window_size is not None:
         left, right = window_size
@@ -245,13 +244,13 @@ def create_packed_seqs_mask(
         distance = relative_pos.unsqueeze(0) - relative_pos.unsqueeze(1)
 
         if left >= 0:
-            mask &= distance >= -left
+            mask &= (distance >= -left)
         if right >= 0:
-            mask &= distance <= right
+            mask &= (distance <= right)
 
-    attn_mask = torch.full((total_len, total_len), float("-inf"), device=device)
+    attn_mask = torch.full((total_len, total_len), float('-inf'), device=device)
     attn_mask.masked_fill_(mask, 0.0)
-
+    
     return attn_mask
 
 
@@ -322,6 +321,7 @@ class Gemma3EncoderLayer(GradientCheckpointingLayer):
 
 class Gemma3PreTrainedModel(PreTrainedModel):
     config: Gemma3Config
+    base_model_prefix = "model"
     _supports_flash_attn = True
 
     def _init_weights(self, module):
@@ -554,26 +554,17 @@ class BiGemma3TextModel(Gemma3PreTrainedModel):
         position_embeddings_global = self.rotary_emb(hidden_states, position_ids)
         position_embeddings_local = self.rotary_emb_local(hidden_states, position_ids)
 
-        base_size = (
-            self.config.sliding_window - 1 if self.config.sliding_window else None
-        )
         window_size = (
-            (base_size, base_size if self.config.use_bidirectional_attention else 0)
-            if base_size is not None
+            (
+                self.config.sliding_window,
+                self.config.sliding_window if self.config.use_bidirectional_attention else 0
+            )
+            if self.config.sliding_window is not None
             else None
         )
         mask_mapping = {
-            "full_attention": create_packed_seqs_mask(
-                cu_seqlens,
-                causal=not self.config.use_bidirectional_attention,
-                device=hidden_states.device,
-            ),
-            "sliding_attention": create_packed_seqs_mask(
-                cu_seqlens,
-                causal=not self.config.use_bidirectional_attention,
-                device=hidden_states.device,
-                window_size=window_size,
-            ),
+            "full_attention": create_packed_seqs_mask(cu_seqlens, causal=not self.config.use_bidirectional_attention, device=hidden_states.device),
+            "sliding_attention": create_packed_seqs_mask(cu_seqlens, causal=not self.config.use_bidirectional_attention, device=hidden_states.device, window_size=window_size)
         }
 
         for encoder_layer in self.layers[: self.config.num_hidden_layers]:
@@ -594,7 +585,7 @@ class BiGemma3TextModel(Gemma3PreTrainedModel):
                 attention_mask=mask_mapping[encoder_layer.attention_type],
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
-                window_size=window_size,
+                window_size=window_size if encoder_layer.attention_type == "sliding_attention" else (-1, -1),
             )
 
             hidden_states = layer_outputs[0]
@@ -688,7 +679,7 @@ class BiGemma3ForSequenceClassification(Gemma3PreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         self.num_labels = config.num_labels
-        self.clf_pooling = config.clf_pooling
+        self.classifier_pooling = config.classifier_pooling
 
         self.model = BiGemma3TextModel(config)
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
@@ -719,11 +710,11 @@ class BiGemma3ForSequenceClassification(Gemma3PreTrainedModel):
         )
         last_hidden_state = encoder_output[0]
 
-        if self.clf_pooling in ["bos", "mean"]:
-            if self.clf_pooling == "bos":
+        if self.classifier_pooling in ["bos", "mean"]:
+            if self.classifier_pooling == "bos":
                 pooled_output = last_hidden_state[:, 0]
 
-            elif self.clf_pooling == "mean":
+            elif self.classifier_pooling == "mean":
                 if attention_mask is None:
                     pooled_output = last_hidden_state.mean(dim=1)
                 else:
@@ -735,7 +726,7 @@ class BiGemma3ForSequenceClassification(Gemma3PreTrainedModel):
             pooled_output = self.dense(pooled_output)
             pooled_output = self.activation(pooled_output)
             logits = self.classifier(pooled_output)
-        elif self.clf_pooling == "late":
+        elif self.classifier_pooling == "late":
             x = self.dense(last_hidden_state)
             x = self.activation(x)
             logits = self.classifier(x)
