@@ -34,13 +34,13 @@ def loss(
 
     Arguments:
         student_logits (torch.Tensor): The logits of the student model.
-            Shape: [B, student_seq_len, vocab_size]
+            Shape: [student_seq_len, vocab_size]
         target_token_ids (torch.Tensor): The top-k teacher/target token IDs
-            Shape: [B, teacher_seq_len, top_k]
+            Shape: [teacher_seq_len, top_k]
         target_logprobs (torch.Tensor): The top-k teacher/target logprobs, these should already be re-normalized.
-            Shape: [B, teacher_seq_len, top_k]
+            Shape: [teacher_seq_len, top_k]
         target_mask (torch.Tensor): The mask for valid tokens.
-            Shape: [B, teacher_seq_len, top_k]
+            Shape: [teacher_seq_len, top_k]
         num_items_in_batch (int, optional): The number of items in the batch.
         kd_temperature (float, optional): The temperature for KD.
             Default: 1.0
@@ -49,13 +49,13 @@ def loss(
     target_logprobs = target_logprobs.float()
 
     # Determine the teacher sequence length
-    # target_token_ids shape: [B, teacher_seq_len, K]
-    # student_logits shape:   [B, student_seq_len, vocab_size]
-    teacher_seq_len = target_token_ids.shape[1]
+    # target_token_ids shape: [teacher_seq_len, K]
+    # student_logits shape:   [student_seq_len, vocab_size]
+    teacher_seq_len = target_token_ids.shape[0]
 
     # Slice student logits to match teacher-provided sequence length
     student_logits_for_kd = (
-        student_logits[:, :teacher_seq_len, :] / kd_temperature
+        student_logits[:teacher_seq_len, :] / kd_temperature
     )  # [B, teacher_seq_len, vocab_size]
 
     # keep in full precision for numerical stability of loss
@@ -112,17 +112,17 @@ class ChunkedTopKKDLoss(nn.Module):
 
     def forward(
         self,
-        student_logits: torch.Tensor,  # [B, seq_len, vocab_size]
-        target_token_ids: torch.Tensor,  # [B, seq_len, K]
-        target_logprobs: torch.Tensor,  # [B, seq_len, K]
-        target_mask: torch.Tensor,  # [B, seq_len, K]
+        student_logits: torch.Tensor,  # [seq_len, vocab_size]
+        target_token_ids: torch.Tensor,  # [seq_len, K]
+        target_logprobs: torch.Tensor,  # [seq_len, K]
+        target_mask: torch.Tensor,  # [seq_len, K]
         num_items_in_batch: int = -1,  # optional batch size for normalization
     ) -> torch.Tensor:
         # 1. Split along the "token" dimension (dim=1).
-        student_logits_chunks = student_logits.chunk(self.num_output_chunks, dim=1)
-        token_ids_chunks = target_token_ids.chunk(self.num_output_chunks, dim=1)
-        logprobs_chunks = target_logprobs.chunk(self.num_output_chunks, dim=1)
-        mask_chunks = target_mask.chunk(self.num_output_chunks, dim=1)
+        student_logits_chunks = student_logits.chunk(self.num_output_chunks, dim=0)
+        token_ids_chunks = target_token_ids.chunk(self.num_output_chunks, dim=0)
+        logprobs_chunks = target_logprobs.chunk(self.num_output_chunks, dim=0)
+        mask_chunks = target_mask.chunk(self.num_output_chunks, dim=0)
 
         # We'll accumulate a global "sum of losses" and "sum of valid tokens"
         # so that our final average is consistent with the entire sequence/batch.

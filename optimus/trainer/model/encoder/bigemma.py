@@ -409,11 +409,14 @@ class Gemma3TextModel(Gemma3PreTrainedModel):
         position_embeddings_global = self.rotary_emb(hidden_states, position_ids)
         position_embeddings_local = self.rotary_emb_local(hidden_states, position_ids)
 
-        base_size = self.config.sliding_window - 1 if self.config.sliding_window else None
         window_size = (
-            base_size,
-            base_size if self.config.use_bidirectional_attention else 0
-        ) if base_size is not None else None
+            (
+                self.config.sliding_window,
+                self.config.sliding_window if self.config.use_bidirectional_attention else 0
+            )
+            if self.config.sliding_window is not None
+            else None
+        )
         mask_mapping = {
             "full_attention": create_packed_seqs_mask(cu_seqlens, causal=not self.config.use_bidirectional_attention, device=hidden_states.device),
             "sliding_attention": create_packed_seqs_mask(cu_seqlens, causal=not self.config.use_bidirectional_attention, device=hidden_states.device, window_size=window_size)
@@ -427,7 +430,7 @@ class Gemma3TextModel(Gemma3PreTrainedModel):
                 attention_mask=mask_mapping[decoder_layer.attention_type],
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
-                window_size=window_size,
+                window_size=window_size if decoder_layer.attention_type == "sliding_attention" else (-1, -1),
             )
 
         hidden_states = self.norm((hidden_states))

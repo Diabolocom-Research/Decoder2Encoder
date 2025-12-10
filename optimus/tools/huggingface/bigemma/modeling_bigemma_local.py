@@ -9,7 +9,7 @@ from transformers.activations import ACT2FN
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
 from transformers.modeling_utils import PreTrainedModel
-from configuration_bigemma import Gemma3Config, BiGemma3TextConfig
+from optimus.tools.huggingface.bigemma.configuration_bigemma import Gemma3Config, BiGemma3TextConfig
 
 from transformers.modeling_outputs import BaseModelOutput, MaskedLMOutput, SequenceClassifierOutput, TokenClassifierOutput
 

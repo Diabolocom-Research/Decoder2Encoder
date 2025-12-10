@@ -16,14 +16,18 @@ from optimus.trainer.distributed import Distributed
 from optimus.trainer.model.load import compile_model
 from optimus.trainer.model.tools import ModelTools
 from optimus.trainer.script.cache import Cache
+from optimus.trainer.script.distillation.knowledge_distillation import (
+    KnowledgeDistillation,
+)
 from optimus.trainer.script.warmup_stable_decay_lr import WarmupStableDecayLR
-from optimus.trainer.script.distillation.knowledge_distillation import KnowledgeDistillation
 
 
 class Pretrain:
     """Pretrain class to train the model."""
 
-    def __init__(self, model: nn.Module, data: Data, distributed: Distributed, config: Config) -> None:
+    def __init__(
+        self, model: nn.Module, data: Data, distributed: Distributed, config: Config
+    ) -> None:
         """
         Args:
             model: Model to train.
@@ -76,7 +80,7 @@ class Pretrain:
         )
 
         self.scheduler = self.get_scheduler(self.train_config.lr_scheduler)
-        self.step = 1
+        self.step = 0
 
         # Knowledge Distillation setup
         if self.train_config.knowledge_distillation:
@@ -89,6 +93,9 @@ class Pretrain:
                 teacher_temperature=self.train_config.kd_teacher_temperature,
                 api_key=self.train_config.kd_api_key,
                 base_url=self.train_config.kd_base_url,
+                student_has_bos=self.config.data.add_bos_token,
+                student_has_eos=self.config.data.add_eos_token,
+                is_mlm=True,
             )
 
         # Resume training if a checkpoint is provided
@@ -151,8 +158,8 @@ class Pretrain:
                 # No sync context manager for gradient accumulation
                 no_sync = (
                     self.model.no_sync()
-                    if i % self.config.train.gradient_accumulation_steps != 0 and
-                    i != len(self.data.train_dataloader)
+                    if i % self.config.train.gradient_accumulation_steps != 0
+                    and i != len(self.data.train_dataloader)
                     else nullcontext()
                 )
 
@@ -161,26 +168,34 @@ class Pretrain:
                         if self.config.model.huggingface_id:
                             loss = self.model(**batch)[0]
                         elif self.train_config.knowledge_distillation:
-                            # Asynchronously teacher forward pass and synchronous student forward pass
-                            teacher_forward = self.knowledge_distillation.get_teacher_forward(
+                            # Asynchronously teacher forward pass while synchronous student forward pass
+                            teacher_forward = (
+                                self.knowledge_distillation.get_teacher_forward(
                                     batch.pop("prompts"), batch["labels"]
                                 )
-                            teacher_task = self.asyncio_loop.create_task(teacher_forward)
+                            )
+                            teacher_task = self.asyncio_loop.create_task(
+                                teacher_forward
+                            )
                             logits, ce_loss = self.model(**batch, cache=self.cache)
 
                             # Ensure the teacher task is complete
                             if not teacher_task.done():
                                 self.asyncio_loop.run_until_complete(teacher_task)
-                            target_token_ids, target_logprobs, target_mask = teacher_task.result()
+                            target_token_ids, target_logprobs, target_mask = (
+                                teacher_task.result()
+                            )
 
                             kl_loss = self.knowledge_distillation.loss(
                                 student_logits=logits,
-                                target_token_ids=target_token_ids,
-                                target_logprobs=target_logprobs,
+                                target_token_ids=target_token_ids.to(device=logits.device),
+                                target_logprobs=target_logprobs.to(device=logits.device),
                                 target_mask=target_mask,
                             )
-                            # Combine CE loss and KL loss with alpha weighting
-                            loss = self.train_config.kd_alpha * kl_loss + (1 - self.train_config.kd_alpha) * ce_loss
+                            loss = (
+                                self.train_config.kd_alpha * kl_loss
+                                + (1 - self.train_config.kd_alpha) * ce_loss
+                            )
                         else:
                             _, loss = self.model(**batch, cache=self.cache)
                         loss = loss / self.config.train.gradient_accumulation_steps
@@ -202,7 +217,13 @@ class Pretrain:
                         self.config.log_print(
                             f"Step: {self.step}",
                             f"Loss: {total_loss:.4f}",
-                            f"Tokens/s: {(self.tokens_per_step / (end_time - start_time)):.2f}",
+                            *(
+                                [
+                                    f"KL Div: {kl_loss:.4f}",
+                                    f"CE Loss: {ce_loss:.4f}"
+                                ]
+                                if self.train_config.knowledge_distillation else []
+                            ),
                             f"Time/step (s): {(end_time - start_time):.2f}",
                             f"Learning rate: {self.scheduler.get_last_lr()[0]}",
                             f"Grad norm: {grad_norm:.4f}",
@@ -214,6 +235,9 @@ class Pretrain:
                         and self.step % self.train_config.log_every_n_steps == 0
                     ):
                         self.writer.add_scalar("Loss/train", total_loss, self.step)
+                        if self.train_config.knowledge_distillation:
+                            self.writer.add_scalar("Loss/KL_divergence", kl_loss.detach().item(), self.step)
+                            self.writer.add_scalar("Loss/cross_entropy", ce_loss.detach().item(), self.step)
                         self.writer.add_scalar("Gradient norm", grad_norm, self.step)
                         self.writer.add_scalar(
                             "Learning rate", self.scheduler.get_last_lr()[0], self.step
@@ -238,9 +262,9 @@ class Pretrain:
                             self.eval()
 
                     # Save model and other states
-                    if self.step % self.train_config.save_step == 0 or i == len(
-                        self.data.train_dataloader
-                    ):
+                    if (
+                        self.step % self.train_config.save_step == 0 and self.step != 0
+                    ) or i == len(self.data.train_dataloader):
                         self.save()
                         self.config.log_print(
                             f"Remaining steps: {(self.steps_per_epoch * self.train_config.num_epochs) - (self.step)}"

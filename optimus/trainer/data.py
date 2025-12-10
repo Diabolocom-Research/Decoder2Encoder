@@ -58,7 +58,8 @@ class Data:
         config.log_print(
             f"Masking probabilities: MLM={config.train.mlm_probability}, "
             f"Mask={config.train.mask_probability}, Random={config.train.random_probability}, "
-            f"Original={config.train.original_probability}"
+            f"Original={config.train.original_probability}, "
+            f"Add BOS token: {self.data_config.add_bos_token}, Add EOS token: {self.data_config.add_eos_token}"
         )
 
     def _load_data_mix(self, path: str) -> list[Stream]:
@@ -241,9 +242,9 @@ class MaskingDataset(StreamingDataset):
 
     @staticmethod
     def _apply_mntp_shift(inputs: NDArray, labels: NDArray, cu_seqlens: NDArray | None):
-        if cu_seqlens is not None:
-            num_seqs = len(cu_seqlens) - 1
+        num_seqs = len(cu_seqlens) - 1
 
+        if cu_seqlens is not None and num_seqs > 1:
             input_mask = np.ones(len(inputs), dtype=bool)
             input_mask[cu_seqlens[1:] - 1] = False
             inputs = inputs[input_mask]
@@ -254,7 +255,8 @@ class MaskingDataset(StreamingDataset):
 
             return inputs, labels, cu_seqlens - np.arange(num_seqs + 1)
         else:
-            return inputs[:-1], labels[1:], None
+            cu_seqlens[1] -= 1
+            return inputs[:-1], labels[1:], cu_seqlens
 
 
 def _get_batch_size(self, batch: Any) -> int:

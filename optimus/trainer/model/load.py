@@ -115,6 +115,7 @@ def load_model(config: Config):
                 attn_implementation="flash_attention_2" if config.model.attn_impl == "flash" else None,
                 fused_cross_entropy=config.model.fused_cross_entropy,
             )
+            model.config.sliding_window = (model.config.sliding_window // 2)
             dict_config_model = asdict(config.model)
         else:
             raise ValueError(f"Model name {config.model.model_name} is not supported.")
