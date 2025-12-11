@@ -174,16 +174,17 @@ class MaskingDataset(StreamingDataset):
 
     def __getitem__(self, index):
         item = super().__getitem__(index)
-
+        
         inputs, cu_seqlens = self._add_special_tokens(item["tokens"], item.get("cu_seqlens"))
+        prompts = inputs.tolist() if self.knowledge_distillation else None
         inputs, labels = self._apply_masking(inputs, cu_seqlens)
 
-        if self.knowledge_distillation:
-            return [inputs, labels, cu_seqlens, item["tokens"]]
-        elif cu_seqlens is not None:
-            return [inputs, labels, cu_seqlens]
-        else:
-            return [inputs, labels]
+        result = [inputs, labels]
+        if cu_seqlens is not None:
+            result.append(cu_seqlens)
+        if prompts is not None:
+            result.append(prompts)
+        return result
 
     def _add_special_tokens(self, tokens: NDArray, cu_seqlens: NDArray | None = None):
         if self.add_bos_token:

@@ -38,7 +38,7 @@ def loss(
         target_token_ids (torch.Tensor): The top-k teacher/target token IDs
             Shape: [teacher_seq_len, top_k]
         target_logprobs (torch.Tensor): The top-k teacher/target logprobs, these should already be re-normalized.
-            Shape: [teacher_seq_len, top_k]
+            Shape: [Bteacher_seq_len, top_k]
         target_mask (torch.Tensor): The mask for valid tokens.
             Shape: [teacher_seq_len, top_k]
         num_items_in_batch (int, optional): The number of items in the batch.
@@ -56,7 +56,7 @@ def loss(
     # Slice student logits to match teacher-provided sequence length
     student_logits_for_kd = (
         student_logits[:teacher_seq_len, :] / kd_temperature
-    )  # [B, teacher_seq_len, vocab_size]
+    )  # [teacher_seq_len, vocab_size]
 
     # keep in full precision for numerical stability of loss
     student_logits_for_kd = student_logits_for_kd.float()
@@ -64,7 +64,7 @@ def loss(
     # Gather student logits for teacher's top-K tokens
     student_logits_topk = torch.gather(
         student_logits_for_kd, dim=-1, index=target_token_ids
-    )  # [B, teacher_seq_len, K]
+    )  # [teacher_seq_len, K]
 
     # Compute logsumexp across full vocabulary
     student_lse = torch.logsumexp(student_logits_for_kd, dim=-1, keepdim=True)
@@ -86,6 +86,10 @@ def loss(
     # Compute forward KL
     kd_loss_per_token = teacher_probs * (target_logprobs - student_logprobs_topk)
     kd_loss = kd_loss_per_token.sum()
+
+    # If there are no valid tokens, return zero loss
+    if kd_loss_per_token.size(0) == 0:
+        return kd_loss
 
     # Normalize by number of items (if provided) or by valid tokens
     if num_items_in_batch > 0:
@@ -118,7 +122,6 @@ class ChunkedTopKKDLoss(nn.Module):
         target_mask: torch.Tensor,  # [seq_len, K]
         num_items_in_batch: int = -1,  # optional batch size for normalization
     ) -> torch.Tensor:
-        # 1. Split along the "token" dimension (dim=1).
         student_logits_chunks = student_logits.chunk(self.num_output_chunks, dim=0)
         token_ids_chunks = target_token_ids.chunk(self.num_output_chunks, dim=0)
         logprobs_chunks = target_logprobs.chunk(self.num_output_chunks, dim=0)
@@ -169,5 +172,4 @@ class ChunkedTopKKDLoss(nn.Module):
             # Otherwise, divide by total valid tokens across all chunks.
             # to get the same result as a non-chunked approach.
             final_loss = total_loss / float(total_valid_tokens)
-
         return final_loss

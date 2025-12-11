@@ -1,7 +1,14 @@
+from typing import List, Optional
+
 import torch
 from openai import OpenAI
+from transformers import AutoTokenizer
 
-from optimus.trainer.script.distillation.kullback_leibler_divergence import ChunkedTopKKDLoss
+from optimus.trainer.configuration.dataset import DatasetConfig
+from optimus.trainer.configuration.train import TrainConfig
+from optimus.trainer.script.distillation.kullback_leibler_divergence import (
+    ChunkedTopKKDLoss,
+)
 
 
 class KnowledgeDistillation:
@@ -11,152 +18,98 @@ class KnowledgeDistillation:
 
     def __init__(
         self,
-        tokenizer,
-        num_logprobs=512,
-        num_output_chunks: int = 8,
-        kd_temperature: int = 1,
-        teacher_temperature: float = 0,
-        api_key: str = "EMPTY",
-        base_url: str = "http://localhost:8000/v1",
-        student_has_bos: bool = False,
-        student_has_eos: bool = False,
-        is_mlm: bool = False,
+        train_config: TrainConfig,
+        dataset_config: DatasetConfig,
     ):
-        self.tokenizer = tokenizer
-        self.num_logprobs = num_logprobs
-        self.teacher_temperature = teacher_temperature
-        self.student_has_bos = student_has_bos
-        self.student_has_eos = student_has_eos
-        self.is_mlm = is_mlm
+        self.train_config = train_config
+        self.dataset_config = dataset_config
+        self.slide_right_for_mlm = not self.train_config.mntp_objective
 
-        self.loss = ChunkedTopKKDLoss(
-            num_output_chunks=num_output_chunks, 
-            kd_temperature=kd_temperature,
-        )
         self.vllm_instance = OpenAI(
-            api_key=api_key,
-            base_url=base_url,
+            api_key=self.train_config.kd_api_key,
+            base_url=self.train_config.kd_base_url,
+        )
+        self.loss = ChunkedTopKKDLoss(
+            num_output_chunks=self.train_config.kd_num_output_chunks,
+            kd_temperature=self.train_config.kd_temperature,
         )
 
-    async def get_teacher_forward(self, prompts: list, label_tokens: list):
+    async def get_teacher_forward(
+        self, prompts: List[int], labels: Optional[torch.LongTensor], **kwargs
+    ):
         completion = self.vllm_instance.completions.create(
-            model="/Users/nboizard/Downloads/bigemma3",
-            prompt=self.tokenizer.batch_decode(prompts, skip_special_tokens=False),
+            model=self.train_config.kd_teacher_name_or_path,
+            prompt=prompts,
             max_tokens=1,
-            temperature=self.teacher_temperature,
-            logprobs=self.num_logprobs,
+            temperature=self.train_config.kd_teacher_temperature,
+            logprobs=self.train_config.kd_num_logprobs,
             echo=True,
         )
-        return self.format_vllm_logprobs(completion, label_tokens, renormalize=True)
-    
-    def format_vllm_logprobs(self, vllm_completion, label_tokens=None, renormalize=True):
-        num_entries = 0
+        return self.format_vllm_logprobs(
+            completion,
+            label_tokens=labels,
+            slide_right_for_mlm=self.slide_right_for_mlm,
+            renormalize=True,
+        )
+
+    def format_vllm_logprobs(
+        self,
+        vllm_completion,
+        label_tokens=None,
+        slide_right_for_mlm=False,
+        renormalize=True,
+    ):
+        kd_num = self.train_config.kd_num_logprobs
+
+        token_ids_list = []
+        token_logprobs_list = []
+        masks_list = []
+
+        label_iter = iter(label_tokens) if label_tokens is not None else None
+
         for choice in vllm_completion.choices:
-            valid_in_choice = sum(1 for lp in choice.prompt_logprobs if lp is not None)
-            num_entries += int(self.student_has_bos) + self.is_mlm + valid_in_choice + int(self.student_has_eos)
-
-        token_ids = torch.zeros((num_entries, self.num_logprobs), dtype=torch.long)
-        token_logprobs = torch.zeros((num_entries, self.num_logprobs), dtype=torch.float32)
-        masks = torch.ones((num_entries, self.num_logprobs), dtype=torch.bool)
-
-        idx = 0
-        label_idx = 0
-        label_limit = len(label_tokens) if label_tokens is not None else 0
-
-        for choice in vllm_completion.choices:
-            if self.student_has_bos:
-                masks[idx, :] = False
-                idx += 1
-            if self.is_mlm:
-                masks[idx, :] = False
-                idx += 1
+            if slide_right_for_mlm:
+                token_ids_list.append([0] * kd_num)
+                token_logprobs_list.append([0.0] * kd_num)
+                masks_list.append([False] * kd_num)
 
             for logprobs in choice.prompt_logprobs:
                 if logprobs is None:
                     continue
-                
-                items = list(logprobs.items())[:self.num_logprobs]
-                current_k = len(items)
 
-                if current_k > 0:
-                    c_ids, c_vals = zip(*items)
+                items = list(logprobs.items())[:kd_num]
 
-                    token_ids[idx, :current_k] = torch.tensor([int(k) for k in c_ids], dtype=torch.long)
-                    token_logprobs[idx, :current_k] = torch.tensor([v['logprob'] for v in c_vals], dtype=torch.float32)
+                token_ids_list.append([int(k) for k, _ in items])
+                token_logprobs_list.append([v["logprob"] for _, v in items])
 
-                if label_idx < label_limit:
-                    if label_tokens[label_idx] == -100:
-                        masks[idx, :] = False
-                    label_idx += 1
-                
-                idx += 1
+                is_valid = True
+                if label_iter:
+                    try:
+                        if next(label_iter) == -100:
+                            is_valid = False
+                    except StopIteration:
+                        pass
 
-            if self.student_has_eos:
-                masks[idx, :] = False
-                idx += 1
+                masks_list.append([is_valid] * kd_num)
+
+        token_ids = torch.tensor(token_ids_list, dtype=torch.long)
+        token_logprobs = torch.tensor(token_logprobs_list, dtype=torch.float32)
+        masks = torch.tensor(masks_list, dtype=torch.bool)
 
         if renormalize:
-            row_log_z = torch.logsumexp(token_logprobs, dim=-1, keepdim=True)
-            token_logprobs -= row_log_z
-            token_logprobs[~masks] = 0.0
+            token_logprobs -= torch.logsumexp(token_logprobs, dim=-1, keepdim=True)
 
         return token_ids, token_logprobs, masks
 
     @staticmethod
-    def _is_teacher_use_bos_eos(tokenizer):
+    def _is_teacher_use_bos_eos(teacher_name_or_path):
         """Check if the tokenizer uses BOS and EOS tokens.
-        
+
         returns: (has_bos: bool, has_eos: bool)
         """
+        tokenizer = AutoTokenizer.from_pretrained(teacher_name_or_path)
         tokens = tokenizer.encode("")
-        
+
         has_bos = tokenizer.bos_token_id in tokens
         has_eos = tokenizer.eos_token_id in tokens
         return has_bos, has_eos
-
-    # def format_vllm_logprobs(self, vllm_completion, label_tokens=None, renormalize=True):
-    #     """
-    #     Format VLLM log probabilities into structured tensors.
-
-    #     Args:
-    #         vllm_completion: VLLM completion object containing choices with prompt_logprobs
-    #         num_logprobs (int): Expected number of log probabilities per token
-    #         renormalize (bool): Whether to renormalize logprobs to ensure they sum to 1
-
-    #     Returns:
-    #         tuple: (token_ids, token_logprobs, masks) - three tensors of shape [N, num_logprobs]
-    #             where N is the total number of valid tokens across all choices
-    #     """
-    #     num_valid_tokens = sum(
-    #         1 for choice in vllm_completion.choices
-    #         for logprobs in choice.prompt_logprobs
-    #         if logprobs is not None
-    #     )
-        
-    #     token_ids = torch.empty((num_valid_tokens, self.num_logprobs), dtype=torch.long)
-    #     token_logprobs = torch.empty((num_valid_tokens, self.num_logprobs), dtype=torch.float32)
-        
-    #     idx = 0
-    #     for choice in vllm_completion.choices:
-    #         for logprobs in choice.prompt_logprobs:
-    #             if logprobs is None:
-    #                 continue
-                
-    #             items = list(logprobs.items())[:self.num_logprobs]
-                
-    #             token_ids[idx, :len(items)] = torch.tensor(
-    #                 [int(k) for k, _ in items], dtype=torch.long
-    #             )
-    #             token_logprobs[idx, :len(items)] = torch.tensor(
-    #                 [v['logprob'] for _, v in items], dtype=torch.float32
-    #             )
-                
-    #             if renormalize:
-    #                 logZ = torch.logsumexp(token_logprobs[idx, :len(items)], dim=-1, keepdim=True)
-    #                 token_logprobs[idx, :len(items)] -= logZ
-                
-    #             idx += 1
-        
-    #     masks = torch.ones((num_valid_tokens, self.num_logprobs), dtype=torch.bool)
-        
-    #     return token_ids, token_logprobs, masks

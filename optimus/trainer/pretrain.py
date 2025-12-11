@@ -86,16 +86,8 @@ class Pretrain:
         if self.train_config.knowledge_distillation:
             self.asyncio_loop = asyncio.get_event_loop()
             self.knowledge_distillation = KnowledgeDistillation(
-                tokenizer=self.data.tokenizer,
-                num_logprobs=self.train_config.kd_num_logprobs,
-                num_output_chunks=self.train_config.kd_num_output_chunks,
-                kd_temperature=self.train_config.kd_temperature,
-                teacher_temperature=self.train_config.kd_teacher_temperature,
-                api_key=self.train_config.kd_api_key,
-                base_url=self.train_config.kd_base_url,
-                student_has_bos=self.config.data.add_bos_token,
-                student_has_eos=self.config.data.add_eos_token,
-                is_mlm=True,
+                train_config=self.train_config,
+                dataset_config=self.config.data,
             )
 
         # Resume training if a checkpoint is provided
@@ -168,15 +160,9 @@ class Pretrain:
                         if self.config.model.huggingface_id:
                             loss = self.model(**batch)[0]
                         elif self.train_config.knowledge_distillation:
-                            # Asynchronously teacher forward pass while synchronous student forward pass
-                            teacher_forward = (
-                                self.knowledge_distillation.get_teacher_forward(
-                                    batch.pop("prompts"), batch["labels"]
-                                )
-                            )
-                            teacher_task = self.asyncio_loop.create_task(
-                                teacher_forward
-                            )
+                            # Parallelize teacher and student forward passes with asynchrounous teacher call
+                            teacher_forward = (self.knowledge_distillation.get_teacher_forward(**batch))
+                            teacher_task = self.asyncio_loop.create_task(teacher_forward)
                             logits, ce_loss = self.model(**batch, cache=self.cache)
 
                             # Ensure the teacher task is complete
