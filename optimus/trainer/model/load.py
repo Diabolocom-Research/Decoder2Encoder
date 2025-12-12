@@ -12,6 +12,8 @@ from transformers import (
 from optimus.trainer.configuration.configs import Config
 from optimus.trainer.model.encoder.bert import Bert, bert_config
 from optimus.trainer.model.encoder.eurobert import EuroBERT, eurobert_config
+from optimus.trainer.model.encoder.biqwen import Qwen3ForMaskedLM
+from optimus.trainer.model.encoder.bigemma import Gemma3ForCausalLM
 from optimus.trainer.model.tools import ModelTools
 
 
@@ -53,6 +55,18 @@ def load_tokenizer(config: Config) -> PreTrainedTokenizer | PreTrainedTokenizerF
         ), "Mask token id to use is not provided (config.model.mask_token_id)."
         tokenizer.mask_token = "[MASK]"
         tokenizer.mask_token_id = config.model.mask_token_id
+    if config.data.add_bos_token and tokenizer.bos_token is None:
+        assert (
+            config.model.bos_token_id is not None
+        ), "bos_token id is not provided (config.model.bos_token_id)."
+        tokenizer.bos_token = tokenizer.convert_ids_to_tokens(config.model.bos_token_id)
+        tokenizer.bos_token_id = config.model.bos_token_id
+    if config.data.add_eos_token and tokenizer.eos_token is None:
+        assert (
+            config.model.eos_token_id is not None
+        ), "eos_token id is not provided (config.model.eos_token_id)."
+        tokenizer.eos_token = tokenizer.convert_ids_to_tokens(config.model.eos_token_id)
+        tokenizer.eos_token_id = config.model.eos_token_id
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
@@ -70,9 +84,9 @@ def load_model(config: Config):
     Returns: Model object.
     """
     if config.model.huggingface_id:
-        logging.set_verbosity_error()
         model = AutoModelForMaskedLM.from_pretrained(
-            config.model.huggingface_id, return_dict=False, trust_remote_code=True
+            config.model.huggingface_id, return_dict=False, trust_remote_code=True,
+            attn_implementation="flash_attention_2" if config.model.attn_impl == "flash" else None,
         )
     else:
         if config.model.model_name == "bert":
@@ -85,6 +99,24 @@ def load_model(config: Config):
                 config.model, eurobert_config[config.model.model_size]
             )
             model = EuroBERT(dict_config_model)
+        elif "qwen3" in config.model.model_name.lower():
+            logging.set_verbosity_error()
+            model = Qwen3ForMaskedLM.from_pretrained(
+                config.model.model_name,
+                attn_implementation="flash_attention_2" if config.model.attn_impl == "flash" else None,
+                fused_cross_entropy=config.model.fused_cross_entropy,
+            )
+            dict_config_model = asdict(config.model)
+        elif "gemma3" in config.model.model_name.lower():
+            logging.set_verbosity_error()
+            model = Gemma3ForCausalLM.from_pretrained(
+                config.model.model_name,
+                use_bidirectional_attention = True,
+                attn_implementation="flash_attention_2" if config.model.attn_impl == "flash" else None,
+                fused_cross_entropy=config.model.fused_cross_entropy,
+            )
+            model.config.sliding_window = model.config.sliding_window // 2
+            dict_config_model = asdict(config.model)
         else:
             raise ValueError(f"Model name {config.model.model_name} is not supported.")
         config.update_config(**dict_config_model)
@@ -109,16 +141,10 @@ def load_model(config: Config):
 
 
 def compile_model(model: torch.nn.Module, config: Config):
-    # WARNING: Torch flash attention raises an error with torch.compile, so we disable it.
-    # The other option is to run flash attention in eager mode (forcing a graph
-    # break), but it is slower. Therefore, we run with the math kernel which can be
-    # compiled and does not force a graph break.
-    torch.backends.cuda.enable_flash_sdp(False)
     return torch.compile(
         model,
         backend="inductor",
-        # Flash attention is not compilable, so we disable it.
-        # fullgraph=True,
+        dynamic=config.train.compile_dynamic,
         mode=config.train.compile_mode,
         options=config.train.compile_options,
     )

@@ -5,7 +5,10 @@ import torch
 import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
 import torch.distributed.checkpoint.state_dict as dcp_sd
-from torch.distributed.fsdp import BackwardPrefetch, FullyShardedDataParallel
+from torch.distributed.fsdp import (
+    BackwardPrefetch,
+    FullyShardedDataParallel,
+)
 
 from optimus.trainer.configuration.configs import Config
 from optimus.trainer.model.tools import ModelTools
@@ -76,7 +79,7 @@ class Distributed:
 
         def timed_print(*args, **kwargs):
             print(
-                f'[{time.strftime("%Y-%m-%d %H:%M:%S")}] [{self.rank}/{self.world_size}]',
+                f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [{self.rank}/{self.world_size}]",
                 *args,
                 **kwargs,
             )

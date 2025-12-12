@@ -54,7 +54,7 @@ class Config:
         Save the configuration object to a file.
         """
         os.makedirs(folder_path, exist_ok=True)
-        with open(rf"{folder_path}/config.json", "w") as file:
+        with open(f"{folder_path}/config.json", "w") as file:
             config = {
                 "train": dataclasses.asdict(self.train),
                 "distributed": dataclasses.asdict(self.distributed),

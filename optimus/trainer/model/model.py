@@ -74,7 +74,7 @@ class TransformerEncoder(nn.Module):
         self,
         x: torch.Tensor,
         *,
-        cu_seq_lens: tp.Optional[torch.Tensor] = None,
+        cu_seqlens: tp.Optional[torch.Tensor] = None,
         max_seqlen: tp.Optional[int] = None,
         labels: tp.Optional[torch.Tensor] = None,
         cache: tp.Optional[Cache] = None,
@@ -84,7 +84,7 @@ class TransformerEncoder(nn.Module):
         for block in self.blocks:
             residuals = block(
                 residuals,
-                cu_seq_lens=cu_seq_lens,
+                cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
                 cache=cache,
             )
@@ -152,14 +152,14 @@ class Block(nn.Module):
         self,
         residuals: torch.Tensor,
         *,
-        cu_seq_lens: tp.Optional[torch.Tensor] = None,
+        cu_seqlens: tp.Optional[torch.Tensor] = None,
         max_seqlen: tp.Optional[int] = None,
         cache: tp.Optional[Cache] = None,
     ) -> torch.Tensor:
         h = self.attn_norm(residuals)
         h = self.attn(
             h,
-            cu_seq_lens=cu_seq_lens,
+            cu_seqlens=cu_seqlens,
             max_seqlen=max_seqlen,
             cache=cache,
         )
@@ -221,7 +221,7 @@ class SelfAttention(nn.Module, abc.ABC):
         self,
         h: torch.Tensor,
         *,
-        cu_seq_lens: tp.Optional[torch.Tensor] = None,
+        cu_seqlens: tp.Optional[torch.Tensor] = None,
         max_seqlen: tp.Optional[int] = None,
         cache: tp.Optional[Cache] = None,
     ) -> torch.Tensor:
@@ -231,7 +231,7 @@ class SelfAttention(nn.Module, abc.ABC):
         Args:
             h (torch.Tensor): Input tensor of shape
                 [batch, seq_len, num_heads, head_dim] or [total, num_heads, head_dim].
-            cu_seq_lens (torch.Tensor, optional): Cumulative sequence lengths tensor of shape [batch + 1].
+            cu_seqlens (torch.Tensor, optional): Cumulative sequence lengths tensor of shape [batch + 1].
             cache (Cache, optional): Dictionary containing precomputed cosine and sine values for RoPE.
 
         Returns:
@@ -247,7 +247,7 @@ class SelfAttention(nn.Module, abc.ABC):
         q, k, v = torch.split(qkv, splits, dim=-1)
 
         # Rearrange tensors based on packed or non-packed input
-        if cu_seq_lens is not None:
+        if cu_seqlens is not None:
             shape = "thd"
             q = einops.rearrange(q, "... (h d) -> ... h d", h=self.num_heads)
             k = einops.rearrange(k, "... (h d) -> ... h d", h=self.num_kv_heads)
@@ -267,25 +267,25 @@ class SelfAttention(nn.Module, abc.ABC):
         if self.rope:
             if cache is None:
                 raise ValueError("Cache must be provided for RoPE")
-            q = self.rope(q, cu_seq_lens=cu_seq_lens, shape=shape, cache=cache)
-            k = self.rope(k, cu_seq_lens=cu_seq_lens, shape=shape, cache=cache)
+            q = self.rope(q, cu_seqlens=cu_seqlens, shape=shape, cache=cache)
+            k = self.rope(k, cu_seqlens=cu_seqlens, shape=shape, cache=cache)
 
         # Compute attention
-        if cu_seq_lens is not None:
+        if cu_seqlens is not None:
             if self.flash:
                 attn = flash_attn.flash_attn_varlen_func(
                     q,
                     k,
                     v,
-                    cu_seq_lens,
-                    cu_seq_lens,
+                    cu_seqlens,
+                    cu_seqlens,
                     max_seqlen_q=max_seqlen,
                     max_seqlen_k=max_seqlen,
                     dropout_p=self.dropout,
                     causal=False,
                 )
             else:
-                attn = self._matmul_packed_sdpa(q, k, v, cu_seq_lens)
+                attn = self._matmul_packed_sdpa(q, k, v, cu_seqlens)
         else:
             if self.flash:
                 attn = flash_attn.flash_attn_func(
@@ -302,7 +302,7 @@ class SelfAttention(nn.Module, abc.ABC):
         attn = einops.rearrange(attn, "... h d -> ... (h d)")
         return self.out_proj(attn)
 
-    def _matmul_packed_sdpa(self, q, k, v, cu_seq_lens):
+    def _matmul_packed_sdpa(self, q, k, v, cu_seqlens):
         """Compute scaled dot-product attention for packed sequences."""
         _, num_heads, head_dim = q.size()
         _, num_kv_heads, _ = k.size()
@@ -320,7 +320,7 @@ class SelfAttention(nn.Module, abc.ABC):
         attn = torch.einsum("q h d, k h d -> h q k", q, k)
 
         # Apply non-causal mask
-        mask = self._make_packed_seqs_non_causal_mask(cu_seq_lens, device=q.device)
+        mask = self._make_packed_seqs_non_causal_mask(cu_seqlens, device=q.device)
         attn += mask
 
         # Normalize attention scores
@@ -334,23 +334,23 @@ class SelfAttention(nn.Module, abc.ABC):
         return torch.einsum("h q k, k h d -> q h d", attn, v)
 
     def _make_packed_seqs_non_causal_mask(
-        self, cu_seq_lens: torch.Tensor, device: torch.device = torch.device("cpu")
+        self, cu_seqlens: torch.Tensor, device: torch.device = torch.device("cpu")
     ):
         """
         Create a non-causal mask for packed sequences.
 
         Args:
-            cu_seq_lens (torch.Tensor): Cumulative sequence lengths tensor of shape [batch + 1].
+            cu_seqlens (torch.Tensor): Cumulative sequence lengths tensor of shape [batch + 1].
             device (torch.device): Device for the mask tensor.
 
         Returns:
             torch.Tensor: Non-causal mask of shape [total_q_len, total_k_len].
         """
-        total_len = cu_seq_lens[-1]
+        total_len = cu_seqlens[-1]
         mask = torch.full((total_len, total_len), float("-inf"), device=device)
 
-        for i in range(1, len(cu_seq_lens)):
-            q_start, q_end = cu_seq_lens[i - 1], cu_seq_lens[i]
+        for i in range(1, len(cu_seqlens)):
+            q_start, q_end = cu_seqlens[i - 1], cu_seqlens[i]
             k_start, k_end = q_start, q_end
             mask[q_start:q_end, k_start:k_end] = 0
 
@@ -460,15 +460,15 @@ class RoPE(nn.Module):
         self,
         x: torch.Tensor,
         *,
-        cu_seq_lens: tp.Optional[torch.Tensor] = None,
+        cu_seqlens: tp.Optional[torch.Tensor] = None,
         shape: tp.Optional[str] = None,
         cache: tp.Mapping[str, tp.Any],
     ) -> torch.Tensor:
         """
         Args:
             x: input tensor of shape [batch, seq_len, num_heads, head_dim] or
-            [total, num_heads, head_dim] if cu_seq_lens is not None
-            cu_seq_lens: cumulative sequence lengths tensor of shape [batch + 1]
+            [total, num_heads, head_dim] if cu_seqlens is not None
+            cu_seqlens: cumulative sequence lengths tensor of shape [batch + 1]
             shape: shape of the input tensor. str['thd', 'blhd', 'bldh']
             cache: dictionary containing the cosine and sine values for the RoPE
         """
@@ -477,7 +477,7 @@ class RoPE(nn.Module):
 
         cos, sin = cache.get("rope")
         if shape == "thd":
-            x = self._apply_rope_thd(x, cu_seq_lens, cos, sin)
+            x = self._apply_rope_thd(x, cu_seqlens, cos, sin)
         elif shape == "blhd":
             x = self._apply_rope_blhd(x, cos, sin)
         else:
@@ -493,7 +493,7 @@ class RoPE(nn.Module):
     def _apply_rope_thd(
         self,
         x: torch.Tensor,
-        cu_seq_lens: torch.Tensor,
+        cu_seqlens: torch.Tensor,
         cos: torch.Tensor,
         sin: torch.Tensor,
     ) -> torch.Tensor:
@@ -506,7 +506,7 @@ class RoPE(nn.Module):
         high, low = einops.rearrange(x, "... (split d) -> split ... d", split=2)
         rot = einops.rearrange([-low, high], "merge ... d -> ... (merge d)", merge=2)
 
-        pos_ids = self._cu_seq_lens_to_pos_ids(cu_seq_lens)
+        pos_ids = self._cu_seqlens_to_pos_ids(cu_seqlens)
 
         cos = einops.rearrange(cos, "m d -> m 1 d")
         sin = einops.rearrange(sin, "m d -> m 1 d")
@@ -554,8 +554,8 @@ class RoPE(nn.Module):
         return torch.cat((x_rope, x_pass), dim=-1)
 
     @torch.compiler.disable
-    def _cu_seq_lens_to_pos_ids(self, cu_seq_lens: torch.Tensor) -> torch.Tensor:
-        seq_lens = cu_seq_lens[1:] - cu_seq_lens[:-1]
+    def _cu_seqlens_to_pos_ids(self, cu_seqlens: torch.Tensor) -> torch.Tensor:
+        seq_lens = cu_seqlens[1:] - cu_seqlens[:-1]
         return torch.cat([torch.arange(seq_len) for seq_len in seq_lens])
 
 

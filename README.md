@@ -61,12 +61,12 @@ python -m optimus.dataprocess.tokenize_dataset --input_dir <path> --tokenizer <p
 Optimus supports a wide range of configurations for different training scenarios. Detailed configuration options are documented in the [training guide](https://github.com/Nicolas-BZRD/EuroBERT/blob/main/docs/trainer.md).
 
 ```bash
-python -m optimus.train --huggingface_id EuroBERT/EuroBERT-210m --data_mix_path <path> --batch_size <int> --mlm_probability <flaot> --mask_probability <int>
+python -m optimus.train --huggingface_id EuroBERT/EuroBERT-210m --data_mix_path <path> --batch_size <int> --mlm_probability <float> --mask_probability <float>
 ```
 
 ### Parameters
 
-- `model_name` (*str*): Model type (`bert` or `eurobert`). Available models are listed [here](https://github.com/Nicolas-BZRD/EuroBERT/tree/main/optimus/trainer/model/encoder).
+- `model_name` (*str*): Model type (`bert`, `eurobert`, `biqwen`, or `bigemma`). Available models are listed [here](https://github.com/Nicolas-BZRD/EuroBERT/tree/main/optimus/trainer/model/encoder).
 - `model_size` (*str*): Model size (e.g., `210m`, `310m`, `2b`).
 - `data_mix_path` (*str*): Path to the data mix folder containing train.json and optionally eval.json. These JSON files define parameter configurations for dataset creation, offering similar configuration options to [MosaicML](https://docs.mosaicml.com/projects/streaming/en/stable/dataset_configuration/mixing_data_sources.html).
 - `batch_size` (*int*): Number of samples per batch.

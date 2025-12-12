@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import os
 import time
@@ -6,21 +7,27 @@ from typing import Generator, Optional
 
 import torch
 import torch.distributed as dist
+import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
 
-from optimus.trainer.script.cache import Cache
-from optimus.trainer.script.warmup_stable_decay_lr import WarmupStableDecayLR
 from optimus.trainer.configuration.configs import Config
 from optimus.trainer.data import Data
 from optimus.trainer.distributed import Distributed
 from optimus.trainer.model.load import compile_model
 from optimus.trainer.model.tools import ModelTools
+from optimus.trainer.script.cache import Cache
+from optimus.trainer.script.distillation.knowledge_distillation import (
+    KnowledgeDistillation,
+)
+from optimus.trainer.script.warmup_stable_decay_lr import WarmupStableDecayLR
 
 
 class Pretrain:
     """Pretrain class to train the model."""
 
-    def __init__(self, model, data: Data, distributed: Distributed, config: Config):
+    def __init__(
+        self, model: nn.Module, data: Data, distributed: Distributed, config: Config
+    ) -> None:
         """
         Args:
             model: Model to train.
@@ -51,12 +58,17 @@ class Pretrain:
             )
         ):
             os.makedirs(
-                rf"{self.train_config.output_dir}/{self.train_config.project_name}/tensorboard",
+                f"{self.train_config.output_dir}/{self.train_config.project_name}/tensorboard",
                 exist_ok=True,
             )
             self.writer = SummaryWriter(
-                rf"{self.train_config.output_dir}/{self.train_config.project_name}/tensorboard"
+                f"{self.train_config.output_dir}/{self.train_config.project_name}/tensorboard"
             )
+
+        self.steps_per_epoch = int(
+            len(self.data.train_dataloader)
+            / self.train_config.gradient_accumulation_steps
+        )
 
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
@@ -69,6 +81,14 @@ class Pretrain:
 
         self.scheduler = self.get_scheduler(self.train_config.lr_scheduler)
         self.step = 0
+
+        # Knowledge Distillation setup
+        if self.train_config.knowledge_distillation:
+            self.asyncio_loop = asyncio.get_event_loop()
+            self.knowledge_distillation = KnowledgeDistillation(
+                train_config=self.train_config,
+                dataset_config=self.config.data,
+            )
 
         # Resume training if a checkpoint is provided
         if self.train_config.reload_checkpoint:
@@ -91,7 +111,7 @@ class Pretrain:
         # Clear GPU cache before start training
         ModelTools.clear_gpu_cache()
 
-    def train(self):
+    def train(self) -> None:
         """
         Launch the training loop.
         """
@@ -131,23 +151,42 @@ class Pretrain:
                 no_sync = (
                     self.model.no_sync()
                     if i % self.config.train.gradient_accumulation_steps != 0
+                    and i != len(self.data.train_dataloader)
                     else nullcontext()
                 )
 
                 with no_sync:
                     with autocast:
                         if self.config.model.huggingface_id:
-                            batch = {
-                                key: value.to(device=self.model.device)
-                                for key, value in batch.items()
-                            }
-                            loss, _ = self.model(**batch)
+                            loss = self.model(**batch)[0]
+                        elif self.train_config.knowledge_distillation:
+                            # Parallelize teacher and student forward passes with asynchrounous teacher call
+                            teacher_forward = (self.knowledge_distillation.get_teacher_forward(**batch))
+                            teacher_task = self.asyncio_loop.create_task(teacher_forward)
+                            logits, ce_loss = self.model(**batch, cache=self.cache)
+
+                            # Ensure the teacher task is complete
+                            if not teacher_task.done():
+                                self.asyncio_loop.run_until_complete(teacher_task)
+                            target_token_ids, target_logprobs, target_mask = (
+                                teacher_task.result()
+                            )
+
+                            kl_loss = self.knowledge_distillation.loss(
+                                student_logits=logits,
+                                target_token_ids=target_token_ids.to(device=logits.device),
+                                target_logprobs=target_logprobs.to(device=logits.device),
+                                target_mask=target_mask,
+                            )
+                            loss = (
+                                self.train_config.kd_alpha * kl_loss
+                                + (1 - self.train_config.kd_alpha) * ce_loss
+                            )
                         else:
                             _, loss = self.model(**batch, cache=self.cache)
                         loss = loss / self.config.train.gradient_accumulation_steps
                     loss.backward()
                 total_loss += loss.detach().item()
-                self.scheduler.step()
 
                 # Training step
                 if i % self.train_config.gradient_accumulation_steps == 0 or i == len(
@@ -157,14 +196,20 @@ class Pretrain:
 
                     self.optimizer.step()
                     self.optimizer.zero_grad()
-                    self.step += 1
+                    self.scheduler.step()
 
                     end_time = time.time()
                     if self.main_process:
                         self.config.log_print(
                             f"Step: {self.step}",
                             f"Loss: {total_loss:.4f}",
-                            f"Tokens/s: {(self.tokens_per_step / (end_time - start_time)):.2f}",
+                            *(
+                                [
+                                    f"KL Div: {kl_loss:.4f}",
+                                    f"CE Loss: {ce_loss:.4f}"
+                                ]
+                                if self.train_config.knowledge_distillation else []
+                            ),
                             f"Time/step (s): {(end_time - start_time):.2f}",
                             f"Learning rate: {self.scheduler.get_last_lr()[0]}",
                             f"Grad norm: {grad_norm:.4f}",
@@ -176,12 +221,15 @@ class Pretrain:
                         and self.step % self.train_config.log_every_n_steps == 0
                     ):
                         self.writer.add_scalar("Loss/train", total_loss, self.step)
+                        if self.train_config.knowledge_distillation:
+                            self.writer.add_scalar("Loss/KL_divergence", kl_loss.detach().item(), self.step)
+                            self.writer.add_scalar("Loss/cross_entropy", ce_loss.detach().item(), self.step)
                         self.writer.add_scalar("Gradient norm", grad_norm, self.step)
                         self.writer.add_scalar(
                             "Learning rate", self.scheduler.get_last_lr()[0], self.step
                         )
                         self.writer.add_scalar(
-                            "Time/step in seconde", end_time - start_time, self.step
+                            "Time/step in seconds", end_time - start_time, self.step
                         )
                         self.writer.add_scalar(
                             "Tokens seen", self.tokens_per_step * self.step, self.step
@@ -193,19 +241,19 @@ class Pretrain:
                         )
 
                     # Validation
-                    if self.train_config.run_validation & (
+                    if self.train_config.run_validation and (
                         self.step % self.train_config.validation_step == 0
                     ):
                         if self.data.eval_dataloader is not None:
                             self.eval()
 
                     # Save model and other states
-                    if self.step % self.train_config.save_step == 0 or i == len(
-                        self.data.train_dataloader
-                    ):
+                    if (
+                        self.step % self.train_config.save_step == 0 and self.step != 0
+                    ) or i == len(self.data.train_dataloader):
                         self.save()
                         self.config.log_print(
-                            f"Remaining steps: {(len(self.data.train_dataloader) - i)/self.train_config.gradient_accumulation_steps}"
+                            f"Remaining steps: {(self.steps_per_epoch * self.train_config.num_epochs) - (self.step)}"
                         )
 
                     # Profiling
@@ -214,21 +262,22 @@ class Pretrain:
                         if prof.step_num == 20 and self.train_config.exit_end_profiling:
                             break
 
+                    self.step += 1
                     start_time = end_time
                     total_loss = 0
 
-    def eval(self):
+    def eval(self) -> None:
         """
         Evaluate the model on the validation set.
         """
         autocast = (
             torch.autocast(device_type="cuda", dtype=torch.bfloat16)
             if self.train_config.mixed_bfloat16 and not self.train_config.fsdp
-            else nullcontext
+            else nullcontext()
         )
         self.model.eval()
 
-        loss = 0
+        total_loss = 0
         for batch in self.data.eval_dataloader:
             input_ids = batch["input_ids"].to(device=self.model.device).contiguous()
             labels = batch["labels"].to(device=self.model.device).contiguous()
@@ -236,33 +285,37 @@ class Pretrain:
             with torch.no_grad():
                 with autocast:
                     _, loss = self.model(input_ids, labels=labels, cache=self.cache)
+            total_loss += loss.item()
 
-        loss /= len(self.data.eval_dataloader)
+        loss = total_loss / len(self.data.eval_dataloader)
         if self.train_config.fsdp or self.train_config.ddp:
+            loss = torch.tensor(loss, device=self.model.device)
             dist.all_reduce(loss, op=dist.ReduceOp.AVG)
+            loss = loss.item()
+
         if self.train_config.tensorboard and self.main_process:
             self.writer.add_scalar("Loss/eval", loss, self.step)
-            print("Validation loss:", loss.item())
+            self.config.log_print(f"Validation loss: {loss}")
         self.model.train()
 
     # ----------------------
     # Tool functions
     # ----------------------
 
-    def save(self):
+    def save(self) -> None:
         """
         Save the model, optimizer, scheduler, dataloader state dicts and config.
         """
-        path = rf"{self.train_config.output_dir}/{self.train_config.project_name}/checkpoints/{self.step}/"
+        path = f"{self.train_config.output_dir}/{self.train_config.project_name}/checkpoints/{self.step}/"
         os.makedirs(path, exist_ok=True)
         self.config.log_print(f"Saving checkpoint at steps: {self.step}.")
         self.config.log_print(f"Saving checkpoint at path: {path}")
 
         if self.train_config.save_model:
             if self.train_config.fsdp:
-                assert (
-                    self.train_config.save_optimizer
-                ), "FSDP requires saving the optimizer with the model."
+                assert self.train_config.save_optimizer, (
+                    "FSDP requires saving the optimizer with the model."
+                )
                 self.distributed.save_fsdp_model_optimizer(
                     self.model, self.optimizer, path
                 )
@@ -296,7 +349,7 @@ class Pretrain:
             self.config.save(path)
             self.config.log_print("Config saved.")
 
-    def resume(self):
+    def resume(self) -> None:
         """
         Load the optimizer, scheduler and dataloader state dicts to resume training.
         Nb: The configuration is reloaded during the init Config object.
@@ -360,7 +413,7 @@ class Pretrain:
         # Tensorboard reloading
         if self.config.train.skip_reload_tensorboard:
             self.config.log_print("Skipping reloading the tensorboard.")
-            self.config.train.skip_reload_scheduler = False
+            self.config.train.skip_reload_tensorboard = False
         elif self.train_config.tensorboard and self.main_process:
             self.writer = SummaryWriter(log_dir=tensorboard_path, purge_step=self.step)
             self.config.log_print("Tensorboard reloaded.")
@@ -376,7 +429,7 @@ class Pretrain:
         if hasattr(self.model, "clip_grad_norm_"):
             return self.model.clip_grad_norm_(max_norm)
         else:
-            return torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm)
+            return nn.utils.clip_grad_norm_(self.model.parameters(), max_norm)
 
     def get_scheduler(
         self, lr_scheduler: str = "OneCycleLR"
@@ -397,18 +450,19 @@ class Pretrain:
                 decay_iters=self.train_config.end_start,
                 final_div_factor=self.train_config.final_div_factor,
                 epochs=self.train_config.num_epochs,
-                steps_per_epoch=len(self.data.train_dataloader),
+                steps_per_epoch=self.steps_per_epoch,
             )
         elif lr_scheduler == "CosineAnnealingLR":
             return torch.optim.lr_scheduler.CosineAnnealingLR(
-                self.optimizer, T_max=len(self.data.train_dataloader)
+                self.optimizer,
+                T_max=self.steps_per_epoch * self.train_config.num_epochs,
             )
         else:
             return torch.optim.lr_scheduler.OneCycleLR(
                 self.optimizer,
                 max_lr=self.train_config.lr,
                 epochs=self.train_config.num_epochs,
-                steps_per_epoch=len(self.data.train_dataloader),
+                steps_per_epoch=self.steps_per_epoch,
                 pct_start=self.train_config.pct_start,
                 div_factor=self.train_config.div_factor,
                 final_div_factor=self.train_config.final_div_factor,
@@ -418,13 +472,13 @@ class Pretrain:
     # Pre-batch functions
     # ----------------------
 
-    def pre_batch_step(self, iter, skip_threshold):
+    def pre_batch_step(self, iter: int, skip_threshold: int) -> bool:
         """
         Handles operations prior to the main training step, such as processing
         the first batch and skipping specified steps.
 
         Args:
-            step (int): Current training step.
+            iter (int): Current iteration number.
             skip_threshold (int): Number of steps to skip during training.
 
         Returns:
@@ -440,6 +494,9 @@ class Pretrain:
             if self.distributed:
                 dist.barrier()
             self.config.log_print("All ranks with first batch, training will start.")
+            self.config.log_print(
+                f"Remaining steps: {(self.steps_per_epoch * self.train_config.num_epochs) - self.step}"
+            )
 
         if iter <= skip_threshold:
             self.config.log_print(
@@ -448,14 +505,13 @@ class Pretrain:
             if iter == skip_threshold:
                 if self.distributed:
                     self.config.log_print("Waiting all rank...")
-                dist.barrier()
+                    dist.barrier()
                 self.config.log_print(
                     f"Completed skipping {self.config.data.step_to_skip} steps."
                 )
             return True
 
-        if iter > skip_threshold:
-            return False
+        return False
 
     # ----------------------
     # Profiling functions
@@ -464,7 +520,7 @@ class Pretrain:
     @contextlib.contextmanager
     def profiler(self) -> Generator[Optional[torch.profiler.profile], None, None]:
         profile_dir = (
-            rf"{self.train_config.output_dir}/{self.train_config.project_name}/profiler"
+            f"{self.train_config.output_dir}/{self.train_config.project_name}/profiler"
         )
         os.makedirs(profile_dir, exist_ok=True)
 
@@ -479,7 +535,7 @@ class Pretrain:
                 f"Profiler type {self.train_config.profiler_output} not supported."
             )
 
-        print(f"Profiling data will be saved in {profile_dir}")
+        self.config.log_print(f"Profiling data will be saved in {profile_dir}")
         with torch.profiler.profile(
             activities=[
                 torch.profiler.ProfilerActivity.CPU,

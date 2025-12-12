@@ -20,7 +20,7 @@ class TrainConfig:
     eps: float = 1e-5
     fused: bool | None = False
 
-    lr_scheduler: str = "WarmupStableDecayLR"
+    lr_scheduler: str = "OneCycleLR"
     pct_start: float = 0.01
     div_factor: int = 0
     end_start: float = 0
@@ -32,6 +32,7 @@ class TrainConfig:
     compile_model: bool = False  # Compile model
     compile_mode: str | None = None  # Compilation mode
     compile_options: dict | None = None  # Compilation options
+    compile_dynamic: bool | None = None  # Dynamic compilation
 
     # Validation configurations
     run_validation: bool = True
@@ -50,6 +51,7 @@ class TrainConfig:
     mask_probability: float = 1.0
     random_probability: float = 0.0
     original_probability: float = 0.0
+    mntp_objective: bool = False
 
     # Reloading configurations
     skip_reload_scheduler: bool = False
@@ -66,3 +68,14 @@ class TrainConfig:
     exit_end_profiling: bool = True
     profiler_output: Literal["chrome", "tensorboard"] = "chrome"
     log_every_n_steps: int = 10
+
+    # Knowledge Distillation configurations
+    knowledge_distillation: bool = False
+    kd_num_logprobs: int = 512
+    kd_num_output_chunks: int = 8
+    kd_temperature: float = 1.0
+    kd_teacher_temperature: float = 0.0
+    kd_alpha: float = 0.5
+    kd_teacher_name_or_path: str = ""
+    kd_base_url: str = "http://localhost:8000/v1"
+    kd_api_key: str = "EMPTY"
