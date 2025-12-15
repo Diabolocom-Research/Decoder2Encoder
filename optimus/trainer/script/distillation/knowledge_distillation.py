@@ -120,7 +120,7 @@ class KnowledgeDistillation:
                 break
             except Exception:
                 if time.time() - start > timeout:
-                    exit()
+                    raise TimeoutError("vLLM server is not available within the timeout period.")
                 time.sleep(1)
                 
     @staticmethod
