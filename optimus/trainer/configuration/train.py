@@ -80,3 +80,4 @@ class TrainConfig:
     kd_teacher_name_or_path: str = ""
     kd_base_url: str = "http://localhost:8000/v1"
     kd_api_key: str = "EMPTY"
+    kd_server_timeout: int = 600

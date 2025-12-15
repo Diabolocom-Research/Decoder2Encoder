@@ -37,7 +37,7 @@ class KnowledgeDistillation:
         )
 
         logger("Waiting for vLLM server.")
-        self.is_server_available()
+        self.is_server_available(self.train_config.kd_server_timeout)
         logger("vLLM server reached.")
 
     async def get_teacher_forward(
