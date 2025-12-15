@@ -36,7 +36,7 @@ class KnowledgeDistillation:
             kd_temperature=self.train_config.kd_temperature,
         )
 
-        logger("Waiting for vLLM server.")
+        logger(f"Waiting for vLLM server at address: {self.train_config.kd_base_url}.")
         self.is_server_available(self.train_config.kd_server_timeout)
         logger("vLLM server reached.")
 
