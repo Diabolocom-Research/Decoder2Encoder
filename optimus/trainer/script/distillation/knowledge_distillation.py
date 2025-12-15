@@ -36,16 +36,16 @@ class KnowledgeDistillation:
             kd_temperature=self.train_config.kd_temperature,
         )
 
-        logger("Waiting for vLLM server for knowledge distillation...")
+        logger("Waiting for vLLM server.")
         self.is_server_available()
-        logger("vLLM server is available for knowledge distillation.")
-
-
-
+        logger("vLLM server reached.")
 
     async def get_teacher_forward(
         self, prompts: List[int], labels: Optional[torch.LongTensor], **kwargs
     ):
+        if self.train_config.kd_teacher_skip_first_token:
+            prompts = [p[1:] for p in prompts]
+
         completion = self.vllm_instance.completions.create(
             model=self.train_config.kd_teacher_name_or_path,
             prompt=prompts,
@@ -58,6 +58,7 @@ class KnowledgeDistillation:
             completion,
             label_tokens=labels,
             slide_right_for_mlm=self.slide_right_for_mlm,
+            skip_first_token=self.train_config.kd_teacher_skip_first_token,
             renormalize=True,
         )
 
@@ -66,6 +67,7 @@ class KnowledgeDistillation:
         vllm_completion,
         label_tokens=None,
         slide_right_for_mlm=False,
+        skip_first_token=False,
         renormalize=True,
     ):
         kd_num = self.train_config.kd_num_logprobs
@@ -78,9 +80,9 @@ class KnowledgeDistillation:
 
         for choice in vllm_completion.choices:
             if slide_right_for_mlm:
-                token_ids_list.append([0] * kd_num)
-                token_logprobs_list.append([0.0] * kd_num)
-                masks_list.append([False] * kd_num)
+                token_ids_list, token_logprobs_list, masks_list = self._add_padding_token(token_ids_list, token_logprobs_list, masks_list, kd_num)
+            if skip_first_token:
+                token_ids_list, token_logprobs_list, masks_list = self._add_padding_token(token_ids_list, token_logprobs_list, masks_list, kd_num)
 
             for logprobs in choice.prompt_logprobs:
                 if logprobs is None:
@@ -134,3 +136,8 @@ class KnowledgeDistillation:
         has_eos = tokenizer.eos_token_id in tokens
         return has_bos, has_eos
     
+    def _add_padding_token(self, token_ids_list, token_logprobs_list, masks_list, kd_num):
+        token_ids_list.append([0] * kd_num)
+        token_logprobs_list.append([0.0] * kd_num)
+        masks_list.append([False] * kd_num)
+        return token_ids_list, token_logprobs_list, masks_list
