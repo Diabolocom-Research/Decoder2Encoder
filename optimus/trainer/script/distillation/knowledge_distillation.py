@@ -1,4 +1,5 @@
 from typing import List, Optional
+import time
 
 import torch
 from openai import OpenAI
@@ -20,6 +21,7 @@ class KnowledgeDistillation:
         self,
         train_config: TrainConfig,
         dataset_config: DatasetConfig,
+        logger: callable,
     ):
         self.train_config = train_config
         self.dataset_config = dataset_config
@@ -33,6 +35,13 @@ class KnowledgeDistillation:
             num_output_chunks=self.train_config.kd_num_output_chunks,
             kd_temperature=self.train_config.kd_temperature,
         )
+
+        logger("Waiting for vLLM server for knowledge distillation...")
+        self.is_server_available()
+        logger("vLLM server is available for knowledge distillation.")
+
+
+
 
     async def get_teacher_forward(
         self, prompts: List[int], labels: Optional[torch.LongTensor], **kwargs
@@ -101,6 +110,17 @@ class KnowledgeDistillation:
 
         return token_ids, token_logprobs, masks
 
+    def is_server_available(self, timeout=300):
+        start = time.time()
+        while True:
+            try:
+                self.vllm_instance.models.list()
+                break
+            except Exception:
+                if time.time() - start > timeout:
+                    exit()
+                time.sleep(1)
+                
     @staticmethod
     def _is_teacher_use_bos_eos(teacher_name_or_path):
         """Check if the tokenizer uses BOS and EOS tokens.
@@ -113,3 +133,4 @@ class KnowledgeDistillation:
         has_bos = tokenizer.bos_token_id in tokens
         has_eos = tokenizer.eos_token_id in tokens
         return has_bos, has_eos
+    

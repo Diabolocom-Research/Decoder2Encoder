@@ -88,6 +88,7 @@ class Pretrain:
             self.knowledge_distillation = KnowledgeDistillation(
                 train_config=self.train_config,
                 dataset_config=self.config.data,
+                logger=self.config.log_print,
             )
 
         # Resume training if a checkpoint is provided
