@@ -118,8 +118,7 @@ class KnowledgeDistillation:
             try:
                 self.vllm_instance.models.list()
                 break
-            except Exception as e:
-                print(e)
+            except Exception:
                 if time.time() - start > timeout:
                     raise TimeoutError("vLLM server is not available within the timeout period.")
                 time.sleep(1)
