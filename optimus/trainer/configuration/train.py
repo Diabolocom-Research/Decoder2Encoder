@@ -71,13 +71,10 @@ class TrainConfig:
 
     # Knowledge Distillation configurations
     knowledge_distillation: bool = False
-    kd_num_logprobs: int = 512
+    kd_num_logprobs: int = 32
     kd_num_output_chunks: int = 8
     kd_temperature: float = 1.0
-    kd_teacher_temperature: float = 0.0
     kd_alpha: float = 0.5
     kd_teacher_skip_first_token: bool = False
-    kd_teacher_name_or_path: str = ""
-    kd_base_url: str = "http://localhost:8000/v1"
-    kd_api_key: str = "EMPTY"
+    kd_base_url: str = "http://localhost:8000/"
     kd_server_timeout: int = 600
