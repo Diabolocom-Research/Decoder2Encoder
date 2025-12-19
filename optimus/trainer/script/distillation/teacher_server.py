@@ -57,7 +57,7 @@ class InferenceEngine:
 
         if self.device == "cuda":
             logger.info("Compiling model forward pass (reduce-overhead)...")
-            self.model.forward = torch.compile(self.model.forward, mode="reduce-overhead", fullgraph=True)
+            self.model.forward = torch.compile(self.model.forward, mode="reduce-overhead")
 
         logger.info("Warming up...")
         try:
