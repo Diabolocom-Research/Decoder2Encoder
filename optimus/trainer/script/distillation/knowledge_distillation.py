@@ -28,7 +28,8 @@ class KnowledgeDistillation:
         self.slide_right_for_mlm = not self.train_config.mntp_objective
 
         self.server_instance = LogprobsTeacherClient(
-            base_url=self.train_config.kd_base_url
+            base_url=self.train_config.kd_base_url,
+            logger=logger,
         )
         self.loss = ChunkedTopKKDLoss(
             num_output_chunks=self.train_config.kd_num_output_chunks,
@@ -125,8 +126,9 @@ class KnowledgeDistillation:
         return token_ids_list, token_logprobs_list, masks_list
 
 class LogprobsTeacherClient:
-    def __init__(self, base_url):
+    def __init__(self, base_url, logger):
         self.base_url = base_url.rstrip('/')
+        self.logger = logger
         
         self.endpoint_url = self.base_url + "/logprobs"
         self.health_url = self.base_url + "/health"
@@ -156,11 +158,13 @@ class LogprobsTeacherClient:
         """
         payload = msgpack.packb({"p": prompt, "k": logprobs})
         
+        start = time.time()
         resp = self.session.post(
             self.endpoint_url, 
             data=payload,
             headers={"Content-Type": "application/msgpack"}
         )
         resp.raise_for_status()
+        self.logger(f"Logprobs request took {time.time() - start:.2f} seconds.")
         
         return msgpack.unpackb(resp.content)
