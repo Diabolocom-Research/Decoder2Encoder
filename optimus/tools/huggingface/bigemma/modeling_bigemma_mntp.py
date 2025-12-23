@@ -545,9 +545,14 @@ class BiGemma3TextModel(Gemma3PreTrainedModel):
         new_input_ids[:, 1:] = input_ids
 
         if attention_mask is not None:
-            input_ids, cu_seqlens, max_seqlen = batch_input_to_cu_seqlens(
-                input_ids, attention_mask
-            )
+            new_attention_mask = torch.empty((batch_size, seq_len + 1), dtype=attention_mask.dtype, device=attention_mask.device)
+            new_attention_mask[:, 0] = 1
+            new_attention_mask[:, 1:] = attention_mask
+            input_ids, cu_seqlens, max_seqlen = batch_input_to_cu_seqlens(new_input_ids, new_attention_mask)
+            attention_mask = new_attention_mask
+        else:
+            input_ids = new_input_ids
+            
         if cu_seqlens is None or max_seqlen is None:
             cu_seqlens = torch.tensor(
                 [0, input_ids.size(0)], dtype=torch.int32, device=input_ids.device

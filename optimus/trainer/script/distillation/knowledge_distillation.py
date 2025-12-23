@@ -1,4 +1,5 @@
 import time
+import msgpack
 from typing import List, Optional
 
 import requests
@@ -45,7 +46,7 @@ class KnowledgeDistillation:
         if self.train_config.kd_teacher_skip_first_token:
             prompts = [p[1:] for p in prompts]
 
-        completion = self.server_instance.logprobs(
+        completion = self.server_instance.get_logprobs(
             prompt=prompts, logprobs=self.train_config.kd_num_logprobs
         )
 
@@ -123,29 +124,43 @@ class KnowledgeDistillation:
         masks_list.append([False] * kd_num)
         return token_ids_list, token_logprobs_list, masks_list
 
-
 class LogprobsTeacherClient:
-    def __init__(self, base_url: str):
-        self.url = base_url
+    def __init__(self, base_url):
+        self.base_url = base_url.rstrip('/')
+        
+        self.endpoint_url = self.base_url + "/logprobs"
+        self.health_url = self.base_url + "/health"
+        
         self.session = requests.Session()
 
     def wait_for_ready(self, timeout: int = 300, interval: int = 2):
+        """
+        Blocks until the server returns 200 OK on /health.
+        """
         deadline = time.time() + timeout
         while time.time() < deadline:
-            resp = self.session.get(f"{self.url}health", timeout=1)
-            if resp.status_code == 200:
-                return
+            try:
+                resp = self.session.get(self.health_url, timeout=1)
+                if resp.status_code == 200:
+                    return
+            except requests.RequestException:
+                pass
+            
             time.sleep(interval)
-        raise TimeoutError("Server unreachable within the timeout period.")
+            
+        raise TimeoutError(f"Server at {self.base_url} unreachable within {timeout} seconds.")
 
-    def logprobs(
-        self,
-        prompt: List[List[int]],
-        logprobs: Optional[int] = 256,
-    ):
+    def get_logprobs(self, prompt: List[List[int]], logprobs: Optional[int] = 5):
+        """
+        Direct simplified call matching your requested signature.
+        """
+        payload = msgpack.packb({"p": prompt, "k": logprobs})
+        
         resp = self.session.post(
-            self.url + "logprobs",
-            json={"prompt": prompt, "logprobs": logprobs},
+            self.endpoint_url, 
+            data=payload,
+            headers={"Content-Type": "application/msgpack"}
         )
         resp.raise_for_status()
-        return resp.json()
+        
+        return msgpack.unpackb(resp.content)
