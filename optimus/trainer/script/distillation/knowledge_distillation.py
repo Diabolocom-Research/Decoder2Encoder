@@ -48,11 +48,9 @@ class KnowledgeDistillation:
         if self.train_config.kd_teacher_skip_first_token:
             prompts = [p[1:] for p in prompts]
 
-        start = time.time()
         completion = self.server_instance.get_logprobs(
             prompt=prompts, logprobs=self.train_config.kd_num_logprobs
         )
-        self.logger(f"Forward pass took {time.time() - start:.2f} seconds.")
 
         return self.format_logprobs(
             completion,
@@ -161,13 +159,11 @@ class LogprobsTeacherClient:
         """
         payload = msgpack.packb({"p": prompt, "k": logprobs})
         
-        start = time.time()
         resp = self.session.post(
             self.endpoint_url, 
             data=payload,
             headers={"Content-Type": "application/msgpack"}
         )
         resp.raise_for_status()
-        self.logger(f"Logprobs request took {time.time() - start:.2f} seconds.")
         
         return msgpack.unpackb(resp.content)
