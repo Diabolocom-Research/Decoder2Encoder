@@ -41,7 +41,7 @@ class KnowledgeDistillation:
         logger("vLLM server reached.")
         logger(f"Knowledge Distillation initialized with Top-{self.train_config.kd_num_logprobs} KL Divergence Loss.")
 
-    async def get_teacher_forward(
+    def get_teacher_forward(
         self, prompts: List[int], labels: Optional[torch.LongTensor], **kwargs
     ):
         if self.train_config.kd_teacher_skip_first_token:

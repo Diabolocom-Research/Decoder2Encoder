@@ -1,7 +1,7 @@
-import asyncio
 import contextlib
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from typing import Generator, Optional
 
@@ -84,7 +84,7 @@ class Pretrain:
 
         # Knowledge Distillation setup
         if self.train_config.knowledge_distillation:
-            self.asyncio_loop = asyncio.get_event_loop()
+            self.teacher_thread_pool = ThreadPoolExecutor(max_workers=1)
             self.knowledge_distillation = KnowledgeDistillation(
                 train_config=self.train_config,
                 dataset_config=self.config.data,
@@ -163,29 +163,25 @@ class Pretrain:
                         elif self.train_config.knowledge_distillation:
                             # Parallelize teacher and student forward passes with asynchrounous teacher call
                             self.config.log_print("Starting teacher forward pass asynchronously.")
-                            teacher_forward = (self.knowledge_distillation.get_teacher_forward(**batch))
-                            teacher_task = self.asyncio_loop.create_task(teacher_forward)
+                            teacher_forward = self.teacher_thread_pool.submit(
+                                self.knowledge_distillation.get_teacher_forward, 
+                                **batch
+                            )
                             self.config.log_print("Teacher forward pass started.")
                             self.config.log_print("Starting student forward pass.")
                             logits, ce_loss = self.model(**batch, cache=self.cache)
                             self.config.log_print("Student forward pass completed.")
 
-                            # Ensure the teacher task is complete
                             self.config.log_print("Waiting for teacher forward pass to complete.")
-                            if not teacher_task.done():
-                                self.asyncio_loop.run_until_complete(teacher_task)
+                            target_token_ids, target_logprobs, target_mask = teacher_forward.result()
                             self.config.log_print("Teacher forward pass completed.")
-                            target_token_ids, target_logprobs, target_mask = (
-                                teacher_task.result()
-                            )
-
                             self.config.log_print("Computing knowledge distillation loss.")
                             kl_loss = self.knowledge_distillation.loss(
-                                student_logits=logits,
-                                target_token_ids=target_token_ids.to(device=logits.device),
-                                target_logprobs=target_logprobs.to(device=logits.device),
-                                target_mask=target_mask,
-                            )
+                                    student_logits=logits,
+                                    target_token_ids=target_token_ids.to(device=logits.device),
+                                    target_logprobs=target_logprobs.to(device=logits.device),
+                                    target_mask=target_mask,
+                                )
                             self.config.log_print("Knowledge distillation loss computed.")
                             loss = (
                                 self.train_config.kd_alpha * kl_loss
