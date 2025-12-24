@@ -26,6 +26,7 @@ class KnowledgeDistillation:
         self.train_config = train_config
         self.dataset_config = dataset_config
         self.slide_right_for_mlm = not self.train_config.mntp_objective
+        self.logger = logger
 
         self.server_instance = LogprobsTeacherClient(
             base_url=self.train_config.kd_base_url,
@@ -47,9 +48,11 @@ class KnowledgeDistillation:
         if self.train_config.kd_teacher_skip_first_token:
             prompts = [p[1:] for p in prompts]
 
+        start = time.time()
         completion = self.server_instance.get_logprobs(
             prompt=prompts, logprobs=self.train_config.kd_num_logprobs
         )
+        self.logger(f"Forward pass took {time.time() - start:.2f} seconds.")
 
         return self.format_logprobs(
             completion,
