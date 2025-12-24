@@ -117,6 +117,9 @@ class Pretrain:
         Launch the training loop.
         """
         # Set up profiling and mixed precision context managers
+        next_teacher_future = None
+        next_teacher_batch = None
+
         profiler = (
             self.profiler()
             if self.train_config.profile and self.main_process
@@ -143,46 +146,91 @@ class Pretrain:
         start_time = time.time()
 
         with profiler as prof:
-            for i, batch in enumerate(self.data.train_dataloader, start=1):
-                # First batch processing
-                if self.pre_batch_step(i, skip_threshold):
-                    continue
+            with profiler as prof:
+                for i, batch in enumerate(self.data.train_dataloader, start=1):
+                    if self.pre_batch_step(i, skip_threshold):
+                        continue
 
-                # No sync context manager for gradient accumulation
-                no_sync = (
-                    self.model.no_sync()
-                    if i % self.config.train.gradient_accumulation_steps != 0
-                    and i != len(self.data.train_dataloader)
-                    else nullcontext()
-                )
+                    # --------------------------------------------------
+                    # Teacher prefetch for NEXT batch (lookahead)
+                    # --------------------------------------------------
+                    if (
+                        self.train_config.knowledge_distillation
+                        and next_teacher_future is None
+                    ):
+                        # First iteration bootstrap
+                        next_teacher_batch = batch
+                        next_teacher_future = self.teacher_thread_pool.submit(
+                            self.knowledge_distillation.get_teacher_forward,
+                            **batch,
+                        )
+                        continue  # nothing to train yet
 
-                with no_sync:
-                    with autocast:
-                        if self.config.model.huggingface_id:
-                            loss = self.model(**batch)[0]
-                        elif self.train_config.knowledge_distillation:
-                            # Parallelize teacher and student forward passes with asynchrounous teacher call
-                            teacher_forward = self.teacher_thread_pool.submit(
-                                self.knowledge_distillation.get_teacher_forward, 
-                                **batch
-                            )
-                            logits, ce_loss = self.model(**batch, cache=self.cache)
+                    # Current teacher results correspond to CURRENT batch
+                    teacher_future = next_teacher_future
+                    teacher_batch = next_teacher_batch
 
-                            target_token_ids, target_logprobs, target_mask = teacher_forward.result()
-                            kl_loss = self.knowledge_distillation.loss(
-                                    student_logits=logits,
-                                    target_token_ids=target_token_ids.to(device=logits.device),
-                                    target_logprobs=target_logprobs.to(device=logits.device),
-                                    target_mask=target_mask,
-                                )
-                            loss = (
-                                self.train_config.kd_alpha * kl_loss
-                                + (1 - self.train_config.kd_alpha) * ce_loss
+                    # --------------------------------------------------
+                    # Submit teacher forward for NEXT iteration ASAP
+                    # --------------------------------------------------
+                    if self.train_config.knowledge_distillation:
+                        try:
+                            next_batch = next(self._train_dataloader_iter)
+                        except AttributeError:
+                            self._train_dataloader_iter = iter(self.data.train_dataloader)
+                            next_batch = next(self._train_dataloader_iter)
+                        except StopIteration:
+                            next_batch = None
+
+                        if next_batch is not None:
+                            next_teacher_batch = next_batch
+                            next_teacher_future = self.teacher_thread_pool.submit(
+                                self.knowledge_distillation.get_teacher_forward,
+                                **next_batch,
                             )
                         else:
-                            _, loss = self.model(**batch, cache=self.cache)
-                        loss = loss / self.config.train.gradient_accumulation_steps
-                    loss.backward()
+                            next_teacher_future = None
+                            next_teacher_batch = None
+                    # --------------------------------------------------
+
+                    no_sync = (
+                        self.model.no_sync()
+                        if i % self.config.train.gradient_accumulation_steps != 0
+                        and i != len(self.data.train_dataloader)
+                        else nullcontext()
+                    )
+
+                    with no_sync:
+                        with autocast:
+                            if self.config.model.huggingface_id:
+                                loss = self.model(**teacher_batch)[0]
+
+                            elif self.train_config.knowledge_distillation:
+                                logits, ce_loss = self.model(
+                                    **teacher_batch,
+                                    cache=self.cache,
+                                )
+
+                                # Wait only here if needed
+                                target_token_ids, target_logprobs, target_mask = teacher_future.result()
+
+                                kl_loss = self.knowledge_distillation.loss(
+                                    student_logits=logits,
+                                    target_token_ids=target_token_ids.to(logits.device),
+                                    target_logprobs=target_logprobs.to(logits.device),
+                                    target_mask=target_mask,
+                                )
+
+                                loss = (
+                                    self.train_config.kd_alpha * kl_loss
+                                    + (1 - self.train_config.kd_alpha) * ce_loss
+                                )
+                            else:
+                                _, loss = self.model(**teacher_batch, cache=self.cache)
+
+                            loss = loss / self.config.train.gradient_accumulation_steps
+
+                        loss.backward()
                 total_loss += loss.detach().item()
 
                 # Training step
