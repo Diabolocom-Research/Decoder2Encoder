@@ -113,214 +113,155 @@ class Pretrain:
         ModelTools.clear_gpu_cache()
 
     def train(self) -> None:
-            """
-            Launch the training loop.
-            """
-            # Set up profiling and mixed precision context managers
-            profiler = (
-                self.profiler()
-                if self.train_config.profile and self.main_process
-                else nullcontext()
-            )
-            autocast = (
-                torch.autocast(device_type="cuda", dtype=torch.bfloat16)
-                if (self.train_config.mixed_bfloat16 and not self.train_config.fsdp)
-                else nullcontext()
-            )
+        """
+        Launch the training loop.
+        """
+        # Set up profiling and mixed precision context managers
+        profiler = (
+            self.profiler()
+            if self.train_config.profile and self.main_process
+            else nullcontext()
+        )
+        autocast = (
+            torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+            if (self.train_config.mixed_bfloat16 and not self.train_config.fsdp)
+            else nullcontext()
+        )
 
-            # Initialize training parameters
-            total_loss = 0
-            skip_threshold = (
-                self.config.data.step_to_skip
-                * self.config.train.gradient_accumulation_steps
-            )
+        # Initialize training parameters
+        total_loss = 0
+        skip_threshold = (
+            self.config.data.step_to_skip
+            * self.config.train.gradient_accumulation_steps
+        )
 
-            if self.distributed:
-                dist.barrier()
-            self.config.log_print(
-                "Ready to start training (first iteration may take some time due to MosaicML indexing)."
-            )
-            start_time = time.time()
+        if self.distributed:
+            dist.barrier()
+        self.config.log_print(
+            "Ready to start training (first iteration may take some time due to MosaicML indexing)."
+        )
+        start_time = time.time()
 
-            # [PIPELINE START] 
-            # Manual iterator setup to allow pre-fetching the next batch for the teacher
-            data_iter = iter(self.data.train_dataloader)
-            steps_total = len(self.data.train_dataloader)
+        with profiler as prof:
+            for i, batch in enumerate(self.data.train_dataloader, start=1):
+                # First batch processing
+                if self.pre_batch_step(i, skip_threshold):
+                    continue
 
-            # Fetch the very first batch
-            try:
-                batch = next(data_iter)
-            except StopIteration:
-                return  # Dataloader is empty
+                # No sync context manager for gradient accumulation
+                no_sync = (
+                    self.model.no_sync()
+                    if i % self.config.train.gradient_accumulation_steps != 0
+                    and i != len(self.data.train_dataloader)
+                    else nullcontext()
+                )
 
-            teacher_future = None
-            # [PIPELINE END]
+                with no_sync:
+                    with autocast:
+                        if self.config.model.huggingface_id:
+                            loss = self.model(**batch)[0]
+                        elif self.train_config.knowledge_distillation:
+                            # Parallelize teacher and student forward passes with asynchrounous teacher call
+                            teacher_forward = self.teacher_thread_pool.submit(
+                                self.knowledge_distillation.get_teacher_forward, 
+                                **batch
+                            )
+                            logits, ce_loss = self.model(**batch, cache=self.cache)
 
-            with profiler as prof:
-                for i in range(1, steps_total + 1):
-                    # First batch processing
-                    if self.pre_batch_step(i, skip_threshold):
-                        # [PIPELINE] If we skip, we must manually move to next batch for the next loop 'i'
-                        if i < steps_total:
-                            try:
-                                batch = next(data_iter)
-                            except StopIteration:
-                                break
-                        continue
+                            target_token_ids, target_logprobs, target_mask = teacher_forward.result()
+                            kl_loss = self.knowledge_distillation.loss(
+                                    student_logits=logits,
+                                    target_token_ids=target_token_ids.to(device=logits.device),
+                                    target_logprobs=target_logprobs.to(device=logits.device),
+                                    target_mask=target_mask,
+                                )
+                            loss = (
+                                self.train_config.kd_alpha * kl_loss
+                                + (1 - self.train_config.kd_alpha) * ce_loss
+                            )
+                        else:
+                            _, loss = self.model(**batch, cache=self.cache)
+                        loss = loss / self.config.train.gradient_accumulation_steps
+                    loss.backward()
+                total_loss += loss.detach().item()
 
-                    # [PIPELINE] Prime the teacher for the current batch if not already running
-                    # (This happens at step 1, or immediately after a skip sequence)
-                    if self.train_config.knowledge_distillation and teacher_future is None:
-                        teacher_future = self.teacher_thread_pool.submit(
-                            self.knowledge_distillation.get_teacher_forward, 
-                            **batch
+                # Training step
+                if i % self.train_config.gradient_accumulation_steps == 0 or i == len(
+                    self.data.train_dataloader
+                ):
+                    grad_norm = self.clip_grad_norm_(self.train_config.clip_grad_norm)
+
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
+                    self.scheduler.step()
+
+                    end_time = time.time()
+                    if self.main_process:
+                        self.config.log_print(
+                            f"Step: {self.step}",
+                            f"Loss: {total_loss:.4f}",
+                            *(
+                                [
+                                    f"KL Div: {kl_loss:.4f}",
+                                    f"CE Loss: {ce_loss:.4f}"
+                                ]
+                                if self.train_config.knowledge_distillation else []
+                            ),
+                            f"Time/step (s): {(end_time - start_time):.2f}",
+                            f"Learning rate: {self.scheduler.get_last_lr()[0]}",
+                            f"Grad norm: {grad_norm:.4f}",
                         )
 
-                    # No sync context manager for gradient accumulation
-                    no_sync = (
-                        self.model.no_sync()
-                        if i % self.config.train.gradient_accumulation_steps != 0
-                        and i != steps_total
-                        else nullcontext()
-                    )
+                    if (
+                        self.train_config.tensorboard
+                        and self.main_process
+                        and self.step % self.train_config.log_every_n_steps == 0
+                    ):
+                        self.writer.add_scalar("Loss/train", total_loss, self.step)
+                        if self.train_config.knowledge_distillation:
+                            self.writer.add_scalar("Loss/KL_divergence", kl_loss.detach().item(), self.step)
+                            self.writer.add_scalar("Loss/cross_entropy", ce_loss.detach().item(), self.step)
+                        self.writer.add_scalar("Gradient norm", grad_norm, self.step)
+                        self.writer.add_scalar(
+                            "Learning rate", self.scheduler.get_last_lr()[0], self.step
+                        )
+                        self.writer.add_scalar(
+                            "Time/step in seconds", end_time - start_time, self.step
+                        )
+                        self.writer.add_scalar(
+                            "Tokens seen", self.tokens_per_step * self.step, self.step
+                        )
+                        self.writer.add_scalar(
+                            "Tokens seen/second",
+                            self.tokens_per_step / (end_time - start_time),
+                            self.step,
+                        )
 
-                    # Initialize pipeline variables for this iteration
-                    next_batch = None
-                    next_teacher_future = None
+                    # Validation
+                    if self.train_config.run_validation and (
+                        self.step % self.train_config.validation_step == 0
+                    ):
+                        if self.data.eval_dataloader is not None:
+                            self.eval()
 
-                    with no_sync:
-                        with autocast:
-                            if self.config.model.huggingface_id:
-                                loss = self.model(**batch)[0]
-                            elif self.train_config.knowledge_distillation:
-                                # 1. Student Forward (Current Batch)
-                                logits, ce_loss = self.model(**batch, cache=self.cache)
+                    # Save model and other states
+                    if (
+                        self.step % self.train_config.save_step == 0 and self.step != 0
+                    ) or i == len(self.data.train_dataloader):
+                        self.save()
+                        self.config.log_print(
+                            f"Remaining steps: {(self.steps_per_epoch * self.train_config.num_epochs) - (self.step)}"
+                        )
 
-                                # [PIPELINE OPTIMIZATION] 
-                                # Prefetch NEXT batch and submit to teacher immediately.
-                                # The teacher works on 'next_batch' while Student does backward pass on 'batch'.
-                                if i < steps_total:
-                                    try:
-                                        next_batch = next(data_iter)
-                                        next_teacher_future = self.teacher_thread_pool.submit(
-                                            self.knowledge_distillation.get_teacher_forward, 
-                                            **next_batch
-                                        )
-                                    except StopIteration:
-                                        pass
+                    # Profiling
+                    if isinstance(prof, torch.profiler.profile) and self.main_process:
+                        prof.step()
+                        if prof.step_num == 20 and self.train_config.exit_end_profiling:
+                            break
 
-                                # 2. Retrieve Teacher Results (Current Batch)
-                                self.config.log_print("Waiting for teacher forward pass to complete.")
-                                target_token_ids, target_logprobs, target_mask = teacher_future.result()
-                                self.config.log_print("All forward pass completed.")
-                                
-                                kl_loss = self.knowledge_distillation.loss(
-                                        student_logits=logits,
-                                        target_token_ids=target_token_ids.to(device=logits.device),
-                                        target_logprobs=target_logprobs.to(device=logits.device),
-                                        target_mask=target_mask,
-                                    )
-                                loss = (
-                                    self.train_config.kd_alpha * kl_loss
-                                    + (1 - self.train_config.kd_alpha) * ce_loss
-                                )
-                            else:
-                                _, loss = self.model(**batch, cache=self.cache)
-                            loss = loss / self.config.train.gradient_accumulation_steps
-                        
-                        # Backward pass
-                        loss.backward()
-                    
-                    total_loss += loss.detach().item()
-
-                    # Training step
-                    if i % self.train_config.gradient_accumulation_steps == 0 or i == steps_total:
-                        grad_norm = self.clip_grad_norm_(self.train_config.clip_grad_norm)
-
-                        self.optimizer.step()
-                        self.optimizer.zero_grad()
-                        self.scheduler.step()
-
-                        end_time = time.time()
-                        if self.main_process:
-                            self.config.log_print(
-                                f"Step: {self.step}",
-                                f"Loss: {total_loss:.4f}",
-                                *(
-                                    [
-                                        f"KL Div: {kl_loss:.4f}",
-                                        f"CE Loss: {ce_loss:.4f}"
-                                    ]
-                                    if self.train_config.knowledge_distillation else []
-                                ),
-                                f"Time/step (s): {(end_time - start_time):.2f}",
-                                f"Learning rate: {self.scheduler.get_last_lr()[0]}",
-                                f"Grad norm: {grad_norm:.4f}",
-                            )
-
-                        if (
-                            self.train_config.tensorboard
-                            and self.main_process
-                            and self.step % self.train_config.log_every_n_steps == 0
-                        ):
-                            self.writer.add_scalar("Loss/train", total_loss, self.step)
-                            if self.train_config.knowledge_distillation:
-                                self.writer.add_scalar("Loss/KL_divergence", kl_loss.detach().item(), self.step)
-                                self.writer.add_scalar("Loss/cross_entropy", ce_loss.detach().item(), self.step)
-                            self.writer.add_scalar("Gradient norm", grad_norm, self.step)
-                            self.writer.add_scalar(
-                                "Learning rate", self.scheduler.get_last_lr()[0], self.step
-                            )
-                            self.writer.add_scalar(
-                                "Time/step in seconds", end_time - start_time, self.step
-                            )
-                            self.writer.add_scalar(
-                                "Tokens seen", self.tokens_per_step * self.step, self.step
-                            )
-                            self.writer.add_scalar(
-                                "Tokens seen/second",
-                                self.tokens_per_step / (end_time - start_time),
-                                self.step,
-                            )
-
-                        # Validation
-                        if self.train_config.run_validation and (
-                            self.step % self.train_config.validation_step == 0
-                        ):
-                            if self.data.eval_dataloader is not None:
-                                self.eval()
-
-                        # Save model and other states
-                        if (
-                            self.step % self.train_config.save_step == 0 and self.step != 0
-                        ) or i == steps_total:
-                            self.save()
-                            self.config.log_print(
-                                f"Remaining steps: {(self.steps_per_epoch * self.train_config.num_epochs) - (self.step)}"
-                            )
-
-                        # Profiling
-                        if isinstance(prof, torch.profiler.profile) and self.main_process:
-                            prof.step()
-                            if prof.step_num == 20 and self.train_config.exit_end_profiling:
-                                break
-
-                        self.step += 1
-                        start_time = end_time
-                        total_loss = 0
-
-                    # [PIPELINE UPDATE] Prepare variables for the next iteration
-                    if i < steps_total:
-                        if next_batch is not None:
-                            # If we prefetched (KD mode), use that
-                            batch = next_batch
-                            teacher_future = next_teacher_future
-                        else:
-                            # Standard mode, fetch now
-                            try:
-                                batch = next(data_iter)
-                            except StopIteration:
-                                break
+                    self.step += 1
+                    start_time = end_time
+                    total_loss = 0
 
     def eval(self) -> None:
         """
