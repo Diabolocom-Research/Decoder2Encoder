@@ -305,7 +305,7 @@ class Pretrain:
                     if isinstance(prof, torch.profiler.profile) and self.main_process:
                         prof.step()
                         if prof.step_num == 20 and self.train_config.exit_end_profiling:
-                            break
+                            return
 
                     self.step += 1
                     start_time = end_time
