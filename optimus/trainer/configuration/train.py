@@ -60,7 +60,6 @@ class TrainConfig:
 
     # Other configurations
     fsdp: bool = False
-    ddp: bool = False
     mixed_bfloat16: bool = True
     seed: int = 42
     tensorboard: bool = True
@@ -78,3 +77,10 @@ class TrainConfig:
     kd_teacher_skip_first_token: bool = False
     kd_base_url: str = "http://localhost:8000/"
     kd_server_timeout: int = 600
+
+    # LoRA configurations
+    lora_finetuning: bool = False
+    lora_r: int = 8
+    lora_target_modules: list[str] = ("q_proj", "k_proj", "v_proj", "o_proj", "fc1", "fc2")
+    lora_alpha: int = 8
+    lora_dropout: float = 0

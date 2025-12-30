@@ -16,6 +16,12 @@ from optimus.trainer.model.encoder.biqwen import Qwen3ForMaskedLM
 from optimus.trainer.model.encoder.bigemma import Gemma3ForCausalLM
 from optimus.trainer.model.tools import ModelTools
 
+try:
+    from peft import get_peft_model, LoraConfig
+    PEFT_AVAILABLE = True
+except ImportError:
+    PEFT_AVAILABLE = False
+
 
 def update_config(config: dataclass, config_dict: dict) -> dict:
     """
@@ -120,6 +126,20 @@ def load_model(config: Config):
         else:
             raise ValueError(f"Model name {config.model.model_name} is not supported.")
         config.update_config(**dict_config_model)
+
+    # Lora tuning
+    if config.train.lora_finetuning:
+        assert PEFT_AVAILABLE, "Please install the 'peft' library to use LoRA finetuning: pip install peft"
+
+        lora_config = LoraConfig(
+            r=config.train.lora_r,
+            target_modules=config.train.lora_target_modules,
+            lora_alpha=config.train.lora_alpha,
+            lora_dropout=config.train.lora_dropout,
+        )
+        model = get_peft_model(model, lora_config)
+        if config.verbose:
+            config.log_print(f"LoRA finetuning is enabled: {lora_config}")
 
     # Move model to GPU if available
     if torch.cuda.is_available() and config.model.gpu:

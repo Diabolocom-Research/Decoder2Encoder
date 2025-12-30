@@ -69,32 +69,6 @@ class Distributed:
         )
         return model
 
-    def ddp_setup_model(self, model: torch.nn.Module) -> torch.nn.Module:
-        """Set up model for DDP training.
-        Args:
-            model (torch.nn.Module): Model to distribute.
-        Returns:
-            torch.nn.Module: Distributed model.
-        """
-
-        def timed_print(*args, **kwargs):
-            print(
-                f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [{self.rank}/{self.world_size}]",
-                *args,
-                **kwargs,
-            )
-
-        timed_print("Setting up model for DDP training", flush=True)
-        model = torch.nn.parallel.DistributedDataParallel(
-            model,
-            device_ids=[self.local_rank],
-            output_device=self.local_rank,
-            find_unused_parameters=False,
-            static_graph=True,
-        )
-        timed_print("Model set up for DDP training successfully.", flush=True)
-        return model
-
     def save_fsdp_model_optimizer(
         self,
         model: FullyShardedDataParallel,
@@ -106,6 +80,17 @@ class Distributed:
             "model": model_sd,
             "optimizer": optimizer_sd,
         }
+
+        if self.config.train.lora_finetuning:
+            trainable_keys = {k for k, v in model.named_parameters() if v.requires_grad}
+            sd["model"] = {k: v for k, v in sd["model"].items() if k in trainable_keys}
+            if dist.get_rank() == 0:
+                base_model = model.module if hasattr(model, "module") else model
+                if hasattr(base_model, "peft_config"):
+                    adapter_config = base_model.peft_config.get("default")
+                    if adapter_config:
+                        adapter_config.save_pretrained(step_dir)
+
         dcp.save(sd, checkpoint_id=step_dir)
 
     def load_fsdp_model_optimizer(
