@@ -340,6 +340,7 @@ class Pretrain:
             and self.main_process
         ):
             torch.save(self.optimizer.state_dict(), path + "optimizer.pt")
+            os.remove(path + "/README.md") if os.path.exists(path + "/README.md") else None
             self.config.log_print("Optimizer saved.")
 
         if self.train_config.save_scheduler and self.main_process:

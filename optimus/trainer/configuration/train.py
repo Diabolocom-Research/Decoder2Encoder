@@ -80,7 +80,7 @@ class TrainConfig:
 
     # LoRA configurations
     lora_finetuning: bool = False
-    lora_r: int = 8
-    lora_target_modules: list[str] = ("q_proj", "k_proj", "v_proj", "o_proj", "fc1", "fc2")
-    lora_alpha: int = 8
+    lora_r: int = 128
+    lora_target_modules: list[str] = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj", "lm_head")
+    lora_alpha: int = 256
     lora_dropout: float = 0

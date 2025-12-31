@@ -8,6 +8,7 @@ from transformers import (
     PreTrainedTokenizerFast,
     logging,
 )
+import warnings
 
 from optimus.trainer.configuration.configs import Config
 from optimus.trainer.model.encoder.bert import Bert, bert_config
@@ -21,7 +22,6 @@ try:
     PEFT_AVAILABLE = True
 except ImportError:
     PEFT_AVAILABLE = False
-
 
 def update_config(config: dataclass, config_dict: dict) -> dict:
     """
@@ -130,6 +130,7 @@ def load_model(config: Config):
     # Lora tuning
     if config.train.lora_finetuning:
         assert PEFT_AVAILABLE, "Please install the 'peft' library to use LoRA finetuning: pip install peft"
+        warnings.filterwarnings("ignore", message=".*Setting `save_embedding_layers` to `True`.*")
 
         lora_config = LoraConfig(
             r=config.train.lora_r,
@@ -156,7 +157,7 @@ def load_model(config: Config):
         )
 
     if config.verbose and config.is_main_process:
-        ModelTools.model_summary(model)
+        ModelTools.model_summary(model, model_layers=True)
     return model
 
 
