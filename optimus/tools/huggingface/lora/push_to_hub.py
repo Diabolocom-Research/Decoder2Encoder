@@ -26,10 +26,10 @@ def reassemble_fsdp_lora(
     model = PeftModel(model, peft_config)
     
     local_state_dict = model.state_dict()
-    # keys_to_load = {k: v for k, v in local_state_dict.items() if "lora" in k}
-    keys_to_load = {k: v for k, v in local_state_dict.items()}
+    keys_to_load = {k: v for k, v in local_state_dict.items() if "lora" in k}
+    # keys_to_load = {k: v for k, v in local_state_dict.items()}
     print(f"Keys to load: {list(keys_to_load.keys())}")
-    exit()
+
     
     dcp_container = {"model": keys_to_load}
 
