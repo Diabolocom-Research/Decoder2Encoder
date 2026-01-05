@@ -81,12 +81,17 @@ class Distributed:
             "optimizer": optimizer_sd,
         }
 
-        if self.config.train.lora_finetuning and dist.get_rank() == 0:
-            base_model = model.module if hasattr(model, "module") else model
-            if hasattr(base_model, "peft_config"):
-                adapter_config = base_model.peft_config.get("default")
-                if adapter_config:
-                    adapter_config.save_pretrained(step_dir)
+        if self.config.train.lora_finetuning:
+            sd["model"] = {
+            k: v for k, v in model_sd.items() 
+            if "lora" in k or "bias" in k or "lm_head" in k or "embed_tokens" in k
+        }
+            if dist.get_rank() == 0:
+                base_model = model.module if hasattr(model, "module") else model
+                if hasattr(base_model, "peft_config"):
+                    adapter_config = base_model.peft_config.get("default")
+                    if adapter_config:
+                        adapter_config.save_pretrained(step_dir)
 
         dcp.save(sd, checkpoint_id=step_dir)
 
