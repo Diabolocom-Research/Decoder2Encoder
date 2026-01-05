@@ -82,8 +82,10 @@ class Distributed:
         }
 
         if self.config.train.lora_finetuning:
-            trainable_keys = {k for k, v in model.named_parameters() if v.requires_grad}
-            sd["model"] = {k: v for k, v in sd["model"].items() if k in trainable_keys}
+            sd["model"] = {
+            k: v for k, v in model_sd.items() 
+            if "lora" in k or "bias" in k
+        }
             if dist.get_rank() == 0:
                 base_model = model.module if hasattr(model, "module") else model
                 if hasattr(base_model, "peft_config"):
